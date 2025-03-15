@@ -1,0 +1,3 @@
+﻿<Project>
+  <Import Project="..\build\InventorApp.API.props" />
+</Project>
