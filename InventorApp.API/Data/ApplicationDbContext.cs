@@ -11,5 +11,6 @@ namespace InventorApp.API.Data
         }
 
         public DbSet<Project> Projects { get; set; }
+        public DbSet<Transformer> Transformers { get; set; }
     }
 } 

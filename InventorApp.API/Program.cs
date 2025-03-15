@@ -37,6 +37,10 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<ProjectService>();
 builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 
+// Register TransformerService and ITransformerRepository
+builder.Services.AddScoped<TransformerService>();
+builder.Services.AddScoped<ITransformerRepository, TransformerRepository>();
+
 // Add DbContext configuration
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseMySql(
