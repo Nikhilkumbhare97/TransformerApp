@@ -1,0 +1,67 @@
+# Visual Studio-specific files
+.vs/
+*.suo
+*.user
+*.vcxproj.user
+*.cache
+*.ncb
+*.sdf
+*.opensdf
+*.sln.docstates
+
+# Build and output directories
+bin/
+obj/
+out/
+Debug/
+Release/
+
+# .NET Core and .NET 5+ specific
+project.lock.json
+project.assets.json
+global.json
+artifacts/
+sdk/
+testhost/
+TestResults/
+*.dotnet/
+
+# Dependencies
+*.pdb
+*.nuget/
+packages/
+*.nupkg
+*.snupkg
+nuget.exe
+NUGET_BACKUP/
+
+# Logs and IDE settings
+*.log
+*.tlog
+*.DS_Store
+*.log
+*.psess
+*.vsp
+*.scc
+
+# Rider / JetBrains files
+.idea/
+*.sln.iml
+
+# Resharper files
+*.DotSettings.user
+
+# Entity Framework migrations
+Migrations/
+
+# User secrets (sensitive data)
+secrets.json
+
+# Docker / Kubernetes
+.dockerignore
+docker-compose.override.yml
+helm-chart/
+
+# Other OS-specific files
+Thumbs.db
+desktop.ini
