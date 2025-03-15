@@ -41,6 +41,10 @@ builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<TransformerService>();
 builder.Services.AddScoped<ITransformerRepository, TransformerRepository>();
 
+// Register TransformerConfigurationService and Repository
+builder.Services.AddScoped<TransformerConfigurationService>();
+builder.Services.AddScoped<ITransformerConfigurationRepository, TransformerConfigurationRepository>();
+
 // Add DbContext configuration
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseMySql(
