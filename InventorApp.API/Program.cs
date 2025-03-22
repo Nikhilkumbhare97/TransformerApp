@@ -49,6 +49,9 @@ builder.Services.AddScoped<ITransformerConfigurationRepository, TransformerConfi
 builder.Services.AddScoped<ImageConfigService>();
 builder.Services.AddScoped<IImageConfigRepository, ImageConfigRepository>();
 
+// Register Assembly services
+builder.Services.AddSingleton<AssemblyService>();
+
 // Add DbContext configuration
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseMySql(
@@ -88,4 +91,4 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.Run(); 
+app.Run();
