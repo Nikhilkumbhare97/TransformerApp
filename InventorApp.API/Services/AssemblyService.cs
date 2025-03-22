@@ -354,10 +354,6 @@ namespace InventorApp.API.Services
                                                     System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".ipt");
 #pragma warning restore CS8604 // Possible null reference argument.
 
-                                                // Open the factory document
-                                                Document factoryDoc = _inventorApp.Documents.Open(factoryPath);
-                                                PartDocument factoryPartDoc = (PartDocument)factoryDoc;
-
                                                 // Create the new member file path
 #pragma warning disable CS8604 // Possible null reference argument.
                                                 string newMemberPath = System.IO.Path.Combine(
@@ -367,9 +363,6 @@ namespace InventorApp.API.Services
 
                                                 // Replace the occurrence with the new member
                                                 targetOccurrence.Replace(newMemberPath, false);
-
-                                                // Close the factory document
-                                                factoryDoc.Close();
 
                                                 Console.WriteLine($"Successfully replaced iPart instance {oldComponent} with {newComponent}");
                                             }
@@ -413,46 +406,73 @@ namespace InventorApp.API.Services
                                 Console.WriteLine($"Changing iAssembly {oldComponent} to {newComponent}");
                                 try
                                 {
-                                    // Instead of trying to modify the iAssembly directly, let's replace the occurrence
-                                    // with the desired configuration
+                                    // Parse the occurrence name to get the base name and instance number
+                                    string[] parts = oldComponent.Split(':');
+                                    if (parts.Length == 2)
+                                    {
+                                        string baseName = parts[0];
+                                        if (int.TryParse(parts[1], out int instanceNumber))
+                                        {
+                                            // Find the specific occurrence in the assembly
+                                            ComponentOccurrence? targetOccurrence = null;
+                                            foreach (ComponentOccurrence occ in occurrences)
+                                            {
+                                                if (occ.Name.StartsWith(baseName) && occ.Name.Contains(":" + instanceNumber))
+                                                {
+                                                    targetOccurrence = occ;
+                                                    break;
+                                                }
+                                            }
+
+                                            if (targetOccurrence != null)
+                                            {
+                                                // Get the factory document path
+                                                string docPath = targetOccurrence.ReferencedDocumentDescriptor.FullDocumentName;
 #pragma warning disable CS8604 // Possible null reference argument.
-                                    string newFullPath = System.IO.Path.Combine(
-                                        System.IO.Path.GetDirectoryName(occurrence.ReferencedDocumentDescriptor.FullDocumentName),
-                                        newComponent + ".iam");
+                                                string factoryPath = System.IO.Path.Combine(
+                                                    System.IO.Path.GetDirectoryName(docPath),
+                                                    System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".iam");
 #pragma warning restore CS8604 // Possible null reference argument.
 
-                                    if (System.IO.File.Exists(newFullPath))
-                                    {
-                                        // Replace the occurrence with the new configuration file
-                                        occurrence.Replace(newFullPath, false);
-                                        Console.WriteLine($"Successfully replaced iAssembly with {newComponent}");
+                                                // Create the new member file path
+#pragma warning disable CS8604 // Possible null reference argument.
+                                                string newMemberPath = System.IO.Path.Combine(
+                                                    System.IO.Path.GetDirectoryName(factoryPath),
+                                                    newComponent + ".iam");
+#pragma warning restore CS8604 // Possible null reference argument.
+
+                                                // Replace the occurrence with the new member
+                                                targetOccurrence.Replace(newMemberPath, false);
+
+                                                Console.WriteLine($"Successfully replaced iAssembly instance {oldComponent} with {newComponent}");
+                                            }
+                                            else
+                                            {
+                                                Console.WriteLine($"Could not find specific occurrence {oldComponent}");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine($"Could not parse instance number from {oldComponent}");
+                                        }
                                     }
                                     else
                                     {
-                                        Console.WriteLine($"Could not find iAssembly configuration file: {newFullPath}");
+                                        // If the component name doesn't have an instance number, try direct replacement
+#pragma warning disable CS8604 // Possible null reference argument.
+                                        string newPath = System.IO.Path.Combine(
+                                            System.IO.Path.GetDirectoryName(occurrence.ReferencedDocumentDescriptor.FullDocumentName),
+                                            newComponent + ".iam");
+#pragma warning restore CS8604 // Possible null reference argument.
 
-                                        // Alternative approach - try to use the Document.ReplaceiAssemblyMember method if available
-                                        try
+                                        if (System.IO.File.Exists(newPath))
                                         {
-                                            Document doc = (Document)occurrence.ReferencedDocumentDescriptor;
-                                            if (doc != null && doc is AssemblyDocument asmDoc)
-                                            {
-                                                // Try to use reflection to find and invoke the method
-                                                var method = asmDoc.GetType().GetMethod("ReplaceiAssemblyMember");
-                                                if (method != null)
-                                                {
-                                                    method.Invoke(asmDoc, new object[] { newComponent });
-                                                    Console.WriteLine($"Successfully updated iAssembly using reflection");
-                                                }
-                                                else
-                                                {
-                                                    Console.WriteLine("ReplaceiAssemblyMember method not found");
-                                                }
-                                            }
+                                            occurrence.Replace(newPath, false);
+                                            Console.WriteLine($"Successfully replaced iAssembly {oldComponent} with {newComponent}");
                                         }
-                                        catch (Exception ex)
+                                        else
                                         {
-                                            Console.WriteLine($"Alternative approach failed: {ex.Message}");
+                                            Console.WriteLine($"Could not find iAssembly file: {newPath}");
                                         }
                                     }
                                 }
@@ -641,6 +661,179 @@ namespace InventorApp.API.Services
                 }
             }
             return -1; // Not found
+        }
+
+        public bool UpdateModelStateAndRepresentations(List<ModelStateUpdate> updates)
+        {
+            try
+            {
+                if (_inventorApp == null)
+                {
+                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
+                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
+
+                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
+                    _inventorApp.Visible = true;
+                }
+
+                foreach (var update in updates)
+                {
+                    string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", update.AssemblyFilePath + ".iam");
+
+                    if (!System.IO.File.Exists(assemblyFilePath))
+                    {
+                        Console.WriteLine($"Assembly file not found: {assemblyFilePath}");
+                        continue;
+                    }
+
+                    Document doc = _inventorApp.Documents.Open(assemblyFilePath);
+
+                    if (doc is AssemblyDocument asmDoc)
+                    {
+                        // Update Model State if specified
+                        if (!string.IsNullOrEmpty(update.ModelState))
+                        {
+                            try
+                            {
+                                // Get the model states
+                                ModelStates modelStates = asmDoc.ComponentDefinition.ModelStates;
+
+                                // Find and activate the specified model state
+                                foreach (ModelState state in modelStates)
+                                {
+                                    if (state.Name.Equals(update.ModelState, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        Console.WriteLine($"Activating model state: {state.Name}");
+                                        state.Activate();
+                                        break;
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error activating model state: {ex.Message}");
+                            }
+                        }
+
+                        // Update Representation if specified
+                        if (!string.IsNullOrEmpty(update.Representations))
+                        {
+                            try
+                            {
+                                // Get the representations manager
+                                RepresentationsManager repManager = asmDoc.ComponentDefinition.RepresentationsManager;
+
+                                // First check in Design View Representations (which is what we see in the tree)
+                                bool representationFound = false;
+
+                                // Log available design view representations for debugging
+                                Console.WriteLine("Available design view representations:");
+                                foreach (DesignViewRepresentation rep in repManager.DesignViewRepresentations)
+                                {
+                                    Console.WriteLine($"- Design View: {rep.Name}");
+
+                                    if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        Console.WriteLine($"Activating design view representation: {rep.Name}");
+                                        rep.Activate();
+                                        representationFound = true;
+                                        break;
+                                    }
+                                }
+
+                                // If not found in Design Views, check in Positional Representations
+                                if (!representationFound)
+                                {
+                                    Console.WriteLine("Available positional representations:");
+                                    foreach (PositionalRepresentation rep in repManager.PositionalRepresentations)
+                                    {
+                                        Console.WriteLine($"- Positional: {rep.Name}");
+
+                                        if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            Console.WriteLine($"Activating positional representation: {rep.Name}");
+                                            rep.Activate();
+                                            representationFound = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // If not found in Positional, check in Level of Detail Representations
+                                if (!representationFound)
+                                {
+                                    Console.WriteLine("Available level of detail representations:");
+                                    foreach (LevelOfDetailRepresentation rep in repManager.LevelOfDetailRepresentations)
+                                    {
+                                        Console.WriteLine($"- Level of Detail: {rep.Name}");
+
+                                        if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            Console.WriteLine($"Activating level of detail representation: {rep.Name}");
+                                            rep.Activate();
+                                            representationFound = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (!representationFound)
+                                {
+                                    Console.WriteLine($"Warning: Could not find representation named '{update.Representations}'");
+
+                                    // Try to find the representation by name in the collection
+                                    try
+                                    {
+                                        // Try to get the design view representation by name
+                                        DesignViewRepresentation? designViewRep = null;
+
+                                        // Use the Item method to get the representation by name
+                                        try
+                                        {
+                                            designViewRep = repManager.DesignViewRepresentations[update.Representations];
+                                            if (designViewRep != null)
+                                            {
+                                                designViewRep.Activate();
+                                                Console.WriteLine($"Successfully activated design view representation by name: {update.Representations}");
+                                                representationFound = true;
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"Could not find design view representation by name: {ex.Message}");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"Error trying to access representation by name: {ex.Message}");
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error activating representation: {ex.Message}");
+                            }
+                        }
+
+                        // Make sure to update the view and save
+                        _inventorApp.ActiveView.Update();
+                        asmDoc.Save();
+                        asmDoc.Close();
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Document is not an assembly: {assemblyFilePath}");
+                        doc.Close();
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error updating model states and representations: {ex.Message}");
+                return false;
+            }
         }
 
     }

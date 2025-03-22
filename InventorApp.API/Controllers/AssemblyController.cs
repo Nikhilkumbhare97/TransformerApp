@@ -96,6 +96,20 @@ namespace InventorAPI.Controllers
             bool success = _assemblyService.UpdateIpartsAndIassemblies(request.AssemblyUpdates);
             return Ok(new { success });
         }
+
+        [HttpPost("update-model-state-and-representations")]
+        public IActionResult UpdateModelStateAndRepresentations([FromBody] ModelStateUpdateRequest request)
+        {
+            if (request.AssemblyUpdates == null || request.AssemblyUpdates.Count == 0)
+            {
+                return BadRequest("Invalid request: assemblyUpdates cannot be empty.");
+            }
+
+            bool success = _assemblyService.UpdateModelStateAndRepresentations(request.AssemblyUpdates);
+            return success
+                ? Ok(new { message = "Model states and representations updated successfully." })
+                : StatusCode(500, "Failed to update model states and representations.");
+        }
     }
 
     public class AssemblyRequest { public string AssemblyPath { get; set; } = "C:\\path\\to\\your\\assembly.iam"; }
@@ -114,4 +128,10 @@ namespace InventorAPI.Controllers
     }
     public class UpdateAllPropertiesRequest { public string DirectoryPath { get; set; } = ""; public Dictionary<string, string> IProperties { get; set; } = new(); }
     public class UpdatePropertiesRequest { public List<Dictionary<string, object>> AssemblyUpdates { get; set; } = new(); }
+
+    public class ModelStateUpdateRequest
+    {
+        [JsonPropertyName("assemblyUpdates")]
+        public List<ModelStateUpdate> AssemblyUpdates { get; set; } = new();
+    }
 }
