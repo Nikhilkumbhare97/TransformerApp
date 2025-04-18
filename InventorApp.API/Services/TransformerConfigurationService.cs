@@ -21,8 +21,22 @@ namespace InventorApp.API.Services
 
         public async Task<TransformerConfiguration> UpdateTransformerConfigDetails(long projectUniqueId, TransformerConfiguration configuration)
         {
-            configuration.ProjectUniqueId = projectUniqueId;
-            return await _repository.UpdateAsync(configuration);
+            // First get the existing configuration
+            var existingConfig = await _repository.GetByIdAsync(projectUniqueId);
+            if (existingConfig == null)
+            {
+                throw new Exception($"Transformer configuration with ID {projectUniqueId} not found.");
+            }
+
+            // Update all fields
+            existingConfig.TankDetails = configuration.TankDetails;
+            existingConfig.LvTurretDetails = configuration.LvTurretDetails;
+            existingConfig.TopCoverDetails = configuration.TopCoverDetails;
+            existingConfig.HvTurretDetails = configuration.HvTurretDetails;
+            existingConfig.Piping = configuration.Piping;
+            existingConfig.LvTrunkingDetails = configuration.LvTrunkingDetails;
+
+            return await _repository.UpdateAsync(existingConfig);
         }
 
         public async Task<TransformerConfiguration?> GetTransformerConfigDetailsById(long projectUniqueId)
@@ -30,4 +44,4 @@ namespace InventorApp.API.Services
             return await _repository.GetByIdAsync(projectUniqueId);
         }
     }
-} 
+}

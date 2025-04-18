@@ -68,11 +68,22 @@ namespace InventorAPI.Controllers
         [HttpPost("update-all-properties")]
         public IActionResult UpdateAllProperties([FromBody] UpdateAllPropertiesRequest request)
         {
-            if (string.IsNullOrEmpty(request.DirectoryPath) || request.IProperties == null || request.IProperties.Count == 0)
-                return BadRequest("Invalid request: directoryPath and iProperties are required.");
+            try
+            {
+                if (string.IsNullOrEmpty(request.DirectoryPath) || request.IProperties == null || request.IProperties.Count == 0)
+                {
+                    return BadRequest(new { message = "Invalid request: directoryPath and iProperties are required." });
+                }
 
-            bool success = _assemblyService.UpdateIPropertiesForAllFiles(request.DirectoryPath, request.IProperties);
-            return success ? Ok("iProperties updated successfully for all assemblies and parts.") : StatusCode(500, "Failed to update iProperties.");
+                bool success = _assemblyService.UpdateIPropertiesForAllFiles(request.DirectoryPath, request.IProperties);
+                return success
+                    ? Ok(new { message = "iProperties updated successfully for all assemblies and parts." })
+                    : StatusCode(500, new { message = "Failed to update iProperties. Check the application logs for details." });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"An error occurred: {ex.Message}" });
+            }
         }
 
         [HttpPost("update-properties")]
@@ -126,7 +137,14 @@ namespace InventorAPI.Controllers
         [JsonPropertyName("assemblyUpdates")]
         public List<AssemblyUpdate> AssemblyUpdates { get; set; } = new();
     }
-    public class UpdateAllPropertiesRequest { public string DirectoryPath { get; set; } = ""; public Dictionary<string, string> IProperties { get; set; } = new(); }
+    public class UpdateAllPropertiesRequest
+    {
+        [JsonPropertyName("drawingspath")]
+        public string DirectoryPath { get; set; } = "";
+
+        [JsonPropertyName("ipropertiesdetails")]
+        public Dictionary<string, string> IProperties { get; set; } = new();
+    }
     public class UpdatePropertiesRequest { public List<Dictionary<string, object>> AssemblyUpdates { get; set; } = new(); }
 
     public class ModelStateUpdateRequest

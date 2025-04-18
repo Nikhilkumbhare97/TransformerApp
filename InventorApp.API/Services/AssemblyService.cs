@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Inventor;
 using InventorApp.API.Models;
+using System.Windows.Forms;
 
 namespace InventorApp.API.Services
 {
@@ -288,10 +289,325 @@ namespace InventorApp.API.Services
             throw new NotImplementedException();
         }
 
-        internal bool UpdateIPropertiesForAllFiles(string directoryPath, Dictionary<string, string> properties)
+        public bool UpdateIPropertiesForAllFiles(string directoryPath, Dictionary<string, string> iProperties)
         {
-            throw new NotImplementedException();
+            List<string> failedFiles = new List<string>();
+
+            try
+            {
+                if (_inventorApp == null)
+                {
+                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
+                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
+
+                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
+                    _inventorApp.Visible = false;
+                }
+
+                Documents docs = _inventorApp.Documents;
+                if (!Directory.Exists(directoryPath))
+                {
+                    Console.WriteLine($"Error: Directory not found -> {directoryPath}");
+                    return false;
+                }
+
+                // Get all Inventor files
+                var files = Directory.GetFiles(directoryPath)
+                    .Where(f => f.EndsWith(".iam", StringComparison.OrdinalIgnoreCase) ||
+                               f.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase))
+                    .Select(f => new FileInfo(f))
+                    .ToList();
+
+                if (!files.Any())
+                {
+                    Console.WriteLine("No Inventor files found in directory.");
+                    return false;
+                }
+
+                // Sort files - Parts first, then Assemblies, both in descending order
+                var sortedFiles = files
+                    .OrderByDescending(f => f.Extension == ".ipt") // Parts first
+                    .ThenByDescending(f => f.Name) // Then by name descending
+                    .ToList();
+
+                Console.WriteLine("\nSorted File Order:");
+                string partPrefix = iProperties.GetValueOrDefault("partPrefix", "");
+
+                _inventorApp.SilentOperation = true;
+
+                foreach (var file in sortedFiles)
+                {
+                    string filePath = file.FullName;
+                    bool fileUpdated = true;
+                    Console.WriteLine($"\nProcessing file: {filePath}");
+
+                    Document? inventorDoc = null;
+                    try
+                    {
+                        inventorDoc = docs.Open(filePath);
+                        PropertySets propSets = inventorDoc.PropertySets;
+
+                        string[] propertySetNames = {
+                    "Design Tracking Properties",
+                    "Summary Information",
+                    "Project Information"
+                };
+
+                        foreach (var entry in iProperties)
+                        {
+                            if (entry.Key == "partPrefix") continue;
+                            bool propertyUpdated = false;
+
+                            foreach (string setName in propertySetNames)
+                            {
+                                try
+                                {
+                                    PropertySet propSet = propSets[setName];
+                                    Property prop = propSet[entry.Key];
+                                    prop.Value = entry.Value;
+                                    Console.WriteLine($"✅ Updated: {entry.Key} = {entry.Value}");
+                                    propertyUpdated = true;
+                                    break;
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Warning: Could not update property {entry.Key} in {setName}: {ex.Message}");
+                                }
+                            }
+
+                            if (!propertyUpdated)
+                            {
+                                Console.WriteLine($"❌ Failed to update property: {entry.Key}");
+                                fileUpdated = false;
+                            }
+                        }
+
+                        // Update Part Number
+                        try
+                        {
+                            PropertySet designTrackingProps = propSets["Design Tracking Properties"];
+                            Property partNumberProp = designTrackingProps["Part Number"];
+                            string existingPartNumber = partNumberProp.Value?.ToString() ?? "";
+
+                            string newPartNumber = existingPartNumber.Contains("_")
+                                ? $"{partPrefix}_{existingPartNumber[(existingPartNumber.IndexOf('_') + 1)..]}"
+                                : $"{partPrefix}_{existingPartNumber}";
+
+                            partNumberProp.Value = newPartNumber;
+                            Console.WriteLine($"✅ Updated: Part Number = {newPartNumber}");
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"❌ Failed to update Part Number: {e.Message}");
+                            fileUpdated = false;
+                        }
+
+                        // Update and save
+                        try
+                        {
+                            // Update document
+                            inventorDoc.Update2();
+                            Console.WriteLine($"🔄 Update triggered for: {filePath}");
+
+                            // Update mass properties and rebuild document
+                            if (inventorDoc is PartDocument partDoc)
+                            {
+                                try
+                                {
+                                    // Update mass properties
+                                    MassProperties massProps = partDoc.ComponentDefinition.MassProperties;
+                                    massProps.Accuracy = 0; // Set to high accuracy
+                                    // Force mass properties update by accessing properties
+                                    double mass = massProps.Mass;
+                                    double volume = massProps.Volume;
+                                    double area = massProps.Area;
+
+                                    partDoc.Rebuild();
+                                    Console.WriteLine($"🔄 Mass properties updated and rebuild completed for part: {filePath}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Warning: Could not update mass properties for part: {ex.Message}");
+                                }
+                            }
+                            else if (inventorDoc is AssemblyDocument asmDoc)
+                            {
+                                try
+                                {
+                                    // Update mass properties
+                                    MassProperties massProps = asmDoc.ComponentDefinition.MassProperties;
+                                    massProps.Accuracy = 0; // Set to high accuracy
+                                    // Force mass properties update by accessing properties
+                                    double mass = massProps.Mass;
+                                    double volume = massProps.Volume;
+                                    double area = massProps.Area;
+
+                                    asmDoc.Rebuild();
+                                    Console.WriteLine($"🔄 Mass properties updated and rebuild completed for assembly: {filePath}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Warning: Could not update mass properties for assembly: {ex.Message}");
+                                }
+                            }
+
+                            if (filePath.EndsWith(".iam", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try
+                                {
+                                    AssemblyDocument asmDoc = (AssemblyDocument)inventorDoc;
+                                    // Update all components in the assembly
+                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
+                                    {
+                                        try
+                                        {
+                                            Document compDoc = (Document)occ.Definition.Document;
+
+                                            // Update component's mass properties
+                                            if (compDoc is PartDocument compPartDoc)
+                                            {
+                                                try
+                                                {
+                                                    MassProperties compMassProps = compPartDoc.ComponentDefinition.MassProperties;
+                                                    compMassProps.Accuracy = 0;
+                                                    // Force mass properties update by accessing properties
+                                                    double mass = compMassProps.Mass;
+                                                    double volume = compMassProps.Volume;
+                                                    double area = compMassProps.Area;
+                                                }
+                                                catch (Exception ex)
+                                                {
+                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
+                                                }
+                                            }
+                                            else if (compDoc is AssemblyDocument compAsmDoc)
+                                            {
+                                                try
+                                                {
+                                                    MassProperties compMassProps = compAsmDoc.ComponentDefinition.MassProperties;
+                                                    compMassProps.Accuracy = 0;
+                                                    // Force mass properties update by accessing properties
+                                                    double mass = compMassProps.Mass;
+                                                    double volume = compMassProps.Volume;
+                                                    double area = compMassProps.Area;
+                                                }
+                                                catch (Exception ex)
+                                                {
+                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
+                                                }
+                                            }
+
+                                            compDoc.Rebuild();
+
+                                            // Update iProperties for the component
+                                            foreach (PropertySet propSet in compDoc.PropertySets)
+                                            {
+                                                foreach (var entry in iProperties)
+                                                {
+                                                    try
+                                                    {
+                                                        if (entry.Key == "partPrefix") continue;
+                                                        Property? prop = null;
+
+                                                        // Try to find the property in different property sets
+                                                        string[] compPropertySets = {
+                                                            "Design Tracking Properties",
+                                                            "Summary Information",
+                                                            "Project Information"
+                                                        };
+
+                                                        foreach (string setName in compPropertySets)
+                                                        {
+                                                            try
+                                                            {
+                                                                prop = propSet[entry.Key];
+                                                                if (prop != null)
+                                                                {
+                                                                    prop.Value = entry.Value;
+                                                                    Console.WriteLine($"✅ Updated {entry.Key} for component {occ.Name}");
+                                                                    break;
+                                                                }
+                                                            }
+                                                            catch { }
+                                                        }
+                                                    }
+                                                    catch (Exception ex)
+                                                    {
+                                                        Console.WriteLine($"Warning: Could not update property {entry.Key} for component {occ.Name}: {ex.Message}");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Console.WriteLine($"Warning: Could not update component {occ.Name}: {e.Message}");
+                                        }
+                                    }
+                                    Console.WriteLine($"🔄 Assembly components updated: {filePath}");
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine($"❌ Failed to update assembly: {e.Message}");
+                                    fileUpdated = false;
+                                }
+                            }
+
+                            _inventorApp.ActiveView.Update();
+                            inventorDoc.Save2(true);
+                            Console.WriteLine($"💾 Save triggered for: {filePath}");
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"❌ Failed to update/save: {e.Message}");
+                            fileUpdated = false;
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"❌ Error processing file: {filePath} -> {e.Message}");
+                        fileUpdated = false;
+                    }
+                    finally
+                    {
+                        if (inventorDoc != null)
+                        {
+                            try
+                            {
+                                inventorDoc.Close(true);
+                                Marshal.ReleaseComObject(inventorDoc);
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"Error closing document: {e.Message}");
+                            }
+                        }
+                    }
+
+                    if (!fileUpdated)
+                    {
+                        failedFiles.Add(filePath);
+                    }
+                }
+
+                // Log failed files
+                if (failedFiles.Any())
+                {
+                    Console.WriteLine("\n⚠️ The following files were NOT updated:");
+                    foreach (string failedFile in failedFiles)
+                    {
+                        Console.WriteLine($" - {failedFile}");
+                    }
+                }
+
+                return !failedFiles.Any();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"Error updating properties: {e.Message}");
+                return false;
+            }
         }
+
         internal bool UpdateIpartsAndIassemblies(List<AssemblyUpdate> assemblyUpdates)
         {
             try
