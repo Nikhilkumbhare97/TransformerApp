@@ -28,13 +28,24 @@ namespace InventorApp.API.Services
                 throw new Exception($"Transformer configuration with ID {projectUniqueId} not found.");
             }
 
-            // Update all fields
-            existingConfig.TankDetails = configuration.TankDetails;
-            existingConfig.LvTurretDetails = configuration.LvTurretDetails;
-            existingConfig.TopCoverDetails = configuration.TopCoverDetails;
-            existingConfig.HvTurretDetails = configuration.HvTurretDetails;
-            existingConfig.Piping = configuration.Piping;
-            existingConfig.LvTrunkingDetails = configuration.LvTrunkingDetails;
+            // Update only if incoming value is not null
+            if (configuration.TankDetails != null)
+                existingConfig.TankDetails = configuration.TankDetails;
+
+            if (configuration.LvTurretDetails != null)
+                existingConfig.LvTurretDetails = configuration.LvTurretDetails;
+
+            if (configuration.TopCoverDetails != null)
+                existingConfig.TopCoverDetails = configuration.TopCoverDetails;
+
+            if (configuration.HvTurretDetails != null)
+                existingConfig.HvTurretDetails = configuration.HvTurretDetails;
+
+            if (configuration.Piping != null)
+                existingConfig.Piping = configuration.Piping;
+
+            if (configuration.LvTrunkingDetails != null)
+                existingConfig.LvTrunkingDetails = configuration.LvTrunkingDetails;
 
             return await _repository.UpdateAsync(existingConfig);
         }
