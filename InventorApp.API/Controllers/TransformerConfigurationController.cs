@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using InventorApp.API.Models;
@@ -28,8 +29,15 @@ namespace InventorApp.API.Controllers
         [HttpPut("{projectUniqueId}")]
         public async Task<ActionResult<TransformerConfiguration>> UpdateTransformerDetails(long projectUniqueId, [FromBody] TransformerConfiguration configuration)
         {
-            var updatedConfig = await _service.UpdateTransformerConfigDetails(projectUniqueId, configuration);
-            return Ok(updatedConfig);
+            try
+            {
+                var updatedConfig = await _service.UpdateTransformerConfigDetails(projectUniqueId, configuration);
+                return Ok(updatedConfig);
+            }
+            catch (Exception ex)
+            {
+                return NotFound(ex.Message);
+            }
         }
 
         [HttpGet("{projectUniqueId}")]
@@ -43,4 +51,4 @@ namespace InventorApp.API.Controllers
             return Ok(config);
         }
     }
-} 
+}
