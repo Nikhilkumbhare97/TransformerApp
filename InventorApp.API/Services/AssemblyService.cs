@@ -398,11 +398,6 @@ namespace InventorApp.API.Services
             throw new Exception($"Feature '{featureName}' not found in part.");
         }
 
-        internal bool UpdateIPropertiesForAssemblies(List<Dictionary<string, object>> assemblyUpdates)
-        {
-            throw new NotImplementedException();
-        }
-
         public bool UpdateIPropertiesForAllFiles(string directoryPath, Dictionary<string, string> iProperties)
         {
             List<string> failedFiles = new List<string>();
