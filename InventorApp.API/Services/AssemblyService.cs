@@ -16,6 +16,29 @@ namespace InventorApp.API.Services
 
         public bool IsAssemblyOpen => _isAssemblyOpen;
 
+        private Inventor.Application GetInventorApplication()
+        {
+            if (_inventorApp == null)
+            {
+                try
+                {
+                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
+                    if (inventorType == null)
+                    {
+                        throw new InvalidOperationException("Autodesk Inventor is not installed or registered. Please ensure Inventor is installed and properly registered.");
+                    }
+
+                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
+                    _inventorApp.Visible = true;
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Failed to initialize Inventor application: {ex.Message}. Please ensure Inventor is running and properly registered.", ex);
+                }
+            }
+            return _inventorApp;
+        }
+
         public void OpenAssembly(string assemblyPath)
         {
             try
@@ -77,16 +100,8 @@ namespace InventorApp.API.Services
             Document? partDoc = null;
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
-
-                partDoc = _inventorApp.Documents.Open(partFilePath);
+                var inventorApp = GetInventorApplication();
+                partDoc = inventorApp.Documents.Open(partFilePath);
                 PartDocument part = (PartDocument)partDoc;
                 Parameters paramList = part.ComponentDefinition.Parameters;
 
@@ -140,28 +155,30 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                if (partDoc != null)
+                // Cleanup Inventor and COM objects
+                try
                 {
-                    try
+                    if (partDoc != null)
                     {
                         partDoc.Close();
                         Marshal.ReleaseComObject(partDoc);
                     }
-                    catch (Exception e)
-                    {
-                        Console.Error.WriteLine($"Error closing document: {e.Message}");
-                    }
-                }
 
-                if (_inventorApp != null)
-                {
-                    try
+                    if (_inventorApp != null)
                     {
                         // Close all remaining documents
                         while (_inventorApp.Documents.Count > 0)
                         {
-                            Document doc = _inventorApp.Documents[1];
-                            doc.Close(true);
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
                         }
 
                         // Quit Inventor and release COM object
@@ -173,10 +190,10 @@ namespace InventorApp.API.Services
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
-                    catch (Exception e)
-                    {
-                        Console.Error.WriteLine($"Error closing Inventor application: {e.Message}");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
                 }
             }
         }
@@ -242,40 +259,78 @@ namespace InventorApp.API.Services
         {
             try
             {
+                var inventorApp = GetInventorApplication();
+                
                 foreach (var action in suppressActions)
                 {
                     string assemblyPath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", action.AssemblyFilePath);
 
                     foreach (var component in action.Components)
                     {
-                        SuppressComponent(assemblyPath, component, action.Suppress);
+                        try
+                        {
+                            SuppressComponent(assemblyPath, component, action.Suppress);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"Error suppressing component {component} in {assemblyPath}: {ex.Message}");
+                            // Continue with next component
+                        }
                     }
                 }
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"Error suppressing multiple components: {e.Message}");
+                Console.Error.WriteLine($"Error in SuppressMultipleComponents: {e.Message}");
                 throw;
             }
-        }
+            finally
+            {
+                // Cleanup Inventor and COM objects
+                try
+                {
+                    if (_inventorApp != null)
+                    {
+                        // Close all open documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
+                        }
 
+                        // Quit Inventor
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                }
+            }
+        }
 
         public void SuppressComponent(string filePath, string componentName, bool suppress)
         {
             try
             {
-                // Ensure Inventor is running
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
-
+                var inventorApp = GetInventorApplication();
+                
                 // Open the document
-                Inventor.Document doc = _inventorApp.Documents.Open(filePath, true);
+                Inventor.Document doc = inventorApp.Documents.Open(filePath, true);
 
                 // Check the document type before casting
                 if (doc is Inventor.AssemblyDocument asmDoc)
@@ -342,8 +397,6 @@ namespace InventorApp.API.Services
 
             throw new Exception($"Feature '{featureName}' not found in part.");
         }
-
-
 
         internal bool UpdateIPropertiesForAssemblies(List<Dictionary<string, object>> assemblyUpdates)
         {
@@ -1008,8 +1061,6 @@ namespace InventorApp.API.Services
             }
         }
 
-
-
         private int GetIpartRowIndex(iPartFactory factory, string newComponentName)
         {
             for (int i = 0; i < factory.TableRows.Count; i++) // Fixed loop condition
@@ -1044,15 +1095,8 @@ namespace InventorApp.API.Services
         {
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
-
+                var inventorApp = GetInventorApplication();
+                
                 foreach (var update in updates)
                 {
                     string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", update.AssemblyFilePath + ".iam");
@@ -1066,7 +1110,7 @@ namespace InventorApp.API.Services
                     Document? doc = null;
                     try
                     {
-                        doc = _inventorApp.Documents.Open(assemblyFilePath);
+                        doc = inventorApp.Documents.Open(assemblyFilePath);
 
                         if (doc is AssemblyDocument asmDoc)
                         {
@@ -1103,15 +1147,11 @@ namespace InventorApp.API.Services
                                     // Get the representations manager
                                     RepresentationsManager repManager = asmDoc.ComponentDefinition.RepresentationsManager;
 
-                                    // First check in Design View Representations (which is what we see in the tree)
+                                    // First check in Design View Representations
                                     bool representationFound = false;
 
-                                    // Log available design view representations for debugging
-                                    Console.WriteLine("Available design view representations:");
                                     foreach (DesignViewRepresentation rep in repManager.DesignViewRepresentations)
                                     {
-                                        Console.WriteLine($"- Design View: {rep.Name}");
-
                                         if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                         {
                                             Console.WriteLine($"Activating design view representation: {rep.Name}");
@@ -1124,11 +1164,8 @@ namespace InventorApp.API.Services
                                     // If not found in Design Views, check in Positional Representations
                                     if (!representationFound)
                                     {
-                                        Console.WriteLine("Available positional representations:");
                                         foreach (PositionalRepresentation rep in repManager.PositionalRepresentations)
                                         {
-                                            Console.WriteLine($"- Positional: {rep.Name}");
-
                                             if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                             {
                                                 Console.WriteLine($"Activating positional representation: {rep.Name}");
@@ -1142,11 +1179,8 @@ namespace InventorApp.API.Services
                                     // If not found in Positional, check in Level of Detail Representations
                                     if (!representationFound)
                                     {
-                                        Console.WriteLine("Available level of detail representations:");
                                         foreach (LevelOfDetailRepresentation rep in repManager.LevelOfDetailRepresentations)
                                         {
-                                            Console.WriteLine($"- Level of Detail: {rep.Name}");
-
                                             if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                             {
                                                 Console.WriteLine($"Activating level of detail representation: {rep.Name}");
@@ -1160,33 +1194,6 @@ namespace InventorApp.API.Services
                                     if (!representationFound)
                                     {
                                         Console.WriteLine($"Warning: Could not find representation named '{update.Representations}'");
-
-                                        // Try to find the representation by name in the collection
-                                        try
-                                        {
-                                            // Try to get the design view representation by name
-                                            DesignViewRepresentation? designViewRep = null;
-
-                                            // Use the Item method to get the representation by name
-                                            try
-                                            {
-                                                designViewRep = repManager.DesignViewRepresentations[update.Representations];
-                                                if (designViewRep != null)
-                                                {
-                                                    designViewRep.Activate();
-                                                    Console.WriteLine($"Successfully activated design view representation by name: {update.Representations}");
-                                                    representationFound = true;
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                Console.WriteLine($"Could not find design view representation by name: {ex.Message}");
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            Console.WriteLine($"Error trying to access representation by name: {ex.Message}");
-                                        }
                                     }
                                 }
                                 catch (Exception ex)
@@ -1196,7 +1203,7 @@ namespace InventorApp.API.Services
                             }
 
                             // Make sure to update the view and save
-                            _inventorApp.ActiveView.Update();
+                            inventorApp.ActiveView.Update();
                             asmDoc.Save();
                         }
                         else
@@ -1230,15 +1237,24 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                if (_inventorApp != null)
+                // Cleanup Inventor and COM objects
+                try
                 {
-                    try
+                    if (_inventorApp != null)
                     {
                         // Close all remaining documents
                         while (_inventorApp.Documents.Count > 0)
                         {
-                            Document doc = _inventorApp.Documents[1];
-                            doc.Close(true);
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
                         }
 
                         // Quit Inventor and release COM object
@@ -1250,10 +1266,10 @@ namespace InventorApp.API.Services
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"Error closing Inventor application: {e.Message}");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
                 }
             }
         }
