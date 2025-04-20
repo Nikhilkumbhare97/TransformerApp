@@ -74,6 +74,7 @@ namespace InventorApp.API.Services
 
         public void ChangeParameters(string partFilePath, List<Dictionary<string, object>> parameters)
         {
+            Document? partDoc = null;
             try
             {
                 if (_inventorApp == null)
@@ -85,7 +86,7 @@ namespace InventorApp.API.Services
                     _inventorApp.Visible = true;
                 }
 
-                Document partDoc = _inventorApp.Documents.Open(partFilePath);
+                partDoc = _inventorApp.Documents.Open(partFilePath);
                 PartDocument part = (PartDocument)partDoc;
                 Parameters paramList = part.ComponentDefinition.Parameters;
 
@@ -96,7 +97,27 @@ namespace InventorApp.API.Services
                         string paramName = paramNameObj.ToString()!;
                         if (double.TryParse(newValueObj.ToString(), out double newValue))
                         {
-                            paramList[paramName].Expression = $"{newValue} mm";
+                            try
+                            {
+                                // First try to set the value directly without units
+                                paramList[paramName].Expression = newValue.ToString();
+                                Console.WriteLine($"Successfully set parameter '{paramName}' to {newValue}");
+                            }
+                            catch (Exception)
+                            {
+                                try
+                                {
+                                    // If that fails, try with units
+                                    paramList[paramName].Expression = $"{newValue} mm";
+                                    Console.WriteLine($"Successfully set parameter '{paramName}' to {newValue} mm");
+                                }
+                                catch (Exception unitEx)
+                                {
+                                    Console.Error.WriteLine($"Failed to set parameter '{paramName}' with value {newValue} (with and without units)");
+                                    Console.Error.WriteLine($"Error details: {unitEx.Message}");
+                                    throw new ArgumentException($"Failed to set parameter '{paramName}' with value {newValue}. Error: {unitEx.Message}", unitEx);
+                                }
+                            }
                         }
                         else
                         {
@@ -110,13 +131,53 @@ namespace InventorApp.API.Services
                 }
 
                 partDoc.Save();
-                partDoc.Close();
                 Console.WriteLine($"Parameters updated successfully in {partFilePath}");
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"Error changing parameters: {e.Message}");
                 throw;
+            }
+            finally
+            {
+                if (partDoc != null)
+                {
+                    try
+                    {
+                        partDoc.Close();
+                        Marshal.ReleaseComObject(partDoc);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Error.WriteLine($"Error closing document: {e.Message}");
+                    }
+                }
+
+                if (_inventorApp != null)
+                {
+                    try
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            Document doc = _inventorApp.Documents[1];
+                            doc.Close(true);
+                        }
+
+                        // Quit Inventor and release COM object
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Error.WriteLine($"Error closing Inventor application: {e.Message}");
+                    }
+                }
             }
         }
 
@@ -1002,144 +1063,161 @@ namespace InventorApp.API.Services
                         continue;
                     }
 
-                    Document doc = _inventorApp.Documents.Open(assemblyFilePath);
-
-                    if (doc is AssemblyDocument asmDoc)
+                    Document? doc = null;
+                    try
                     {
-                        // Update Model State if specified
-                        if (!string.IsNullOrEmpty(update.ModelState))
-                        {
-                            try
-                            {
-                                // Get the model states
-                                ModelStates modelStates = asmDoc.ComponentDefinition.ModelStates;
+                        doc = _inventorApp.Documents.Open(assemblyFilePath);
 
-                                // Find and activate the specified model state
-                                foreach (ModelState state in modelStates)
+                        if (doc is AssemblyDocument asmDoc)
+                        {
+                            // Update Model State if specified
+                            if (!string.IsNullOrEmpty(update.ModelState))
+                            {
+                                try
                                 {
-                                    if (state.Name.Equals(update.ModelState, StringComparison.OrdinalIgnoreCase))
+                                    // Get the model states
+                                    ModelStates modelStates = asmDoc.ComponentDefinition.ModelStates;
+
+                                    // Find and activate the specified model state
+                                    foreach (ModelState state in modelStates)
                                     {
-                                        Console.WriteLine($"Activating model state: {state.Name}");
-                                        state.Activate();
-                                        break;
+                                        if (state.Name.Equals(update.ModelState, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            Console.WriteLine($"Activating model state: {state.Name}");
+                                            state.Activate();
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"Error activating model state: {ex.Message}");
-                            }
-                        }
-
-                        // Update Representation if specified
-                        if (!string.IsNullOrEmpty(update.Representations))
-                        {
-                            try
-                            {
-                                // Get the representations manager
-                                RepresentationsManager repManager = asmDoc.ComponentDefinition.RepresentationsManager;
-
-                                // First check in Design View Representations (which is what we see in the tree)
-                                bool representationFound = false;
-
-                                // Log available design view representations for debugging
-                                Console.WriteLine("Available design view representations:");
-                                foreach (DesignViewRepresentation rep in repManager.DesignViewRepresentations)
+                                catch (Exception ex)
                                 {
-                                    Console.WriteLine($"- Design View: {rep.Name}");
-
-                                    if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        Console.WriteLine($"Activating design view representation: {rep.Name}");
-                                        rep.Activate();
-                                        representationFound = true;
-                                        break;
-                                    }
+                                    Console.WriteLine($"Error activating model state: {ex.Message}");
                                 }
+                            }
 
-                                // If not found in Design Views, check in Positional Representations
-                                if (!representationFound)
+                            // Update Representation if specified
+                            if (!string.IsNullOrEmpty(update.Representations))
+                            {
+                                try
                                 {
-                                    Console.WriteLine("Available positional representations:");
-                                    foreach (PositionalRepresentation rep in repManager.PositionalRepresentations)
+                                    // Get the representations manager
+                                    RepresentationsManager repManager = asmDoc.ComponentDefinition.RepresentationsManager;
+
+                                    // First check in Design View Representations (which is what we see in the tree)
+                                    bool representationFound = false;
+
+                                    // Log available design view representations for debugging
+                                    Console.WriteLine("Available design view representations:");
+                                    foreach (DesignViewRepresentation rep in repManager.DesignViewRepresentations)
                                     {
-                                        Console.WriteLine($"- Positional: {rep.Name}");
+                                        Console.WriteLine($"- Design View: {rep.Name}");
 
                                         if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                         {
-                                            Console.WriteLine($"Activating positional representation: {rep.Name}");
+                                            Console.WriteLine($"Activating design view representation: {rep.Name}");
                                             rep.Activate();
                                             representationFound = true;
                                             break;
                                         }
                                     }
-                                }
 
-                                // If not found in Positional, check in Level of Detail Representations
-                                if (!representationFound)
-                                {
-                                    Console.WriteLine("Available level of detail representations:");
-                                    foreach (LevelOfDetailRepresentation rep in repManager.LevelOfDetailRepresentations)
+                                    // If not found in Design Views, check in Positional Representations
+                                    if (!representationFound)
                                     {
-                                        Console.WriteLine($"- Level of Detail: {rep.Name}");
-
-                                        if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                        Console.WriteLine("Available positional representations:");
+                                        foreach (PositionalRepresentation rep in repManager.PositionalRepresentations)
                                         {
-                                            Console.WriteLine($"Activating level of detail representation: {rep.Name}");
-                                            rep.Activate();
-                                            representationFound = true;
-                                            break;
+                                            Console.WriteLine($"- Positional: {rep.Name}");
+
+                                            if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                Console.WriteLine($"Activating positional representation: {rep.Name}");
+                                                rep.Activate();
+                                                representationFound = true;
+                                                break;
+                                            }
                                         }
                                     }
-                                }
 
-                                if (!representationFound)
-                                {
-                                    Console.WriteLine($"Warning: Could not find representation named '{update.Representations}'");
-
-                                    // Try to find the representation by name in the collection
-                                    try
+                                    // If not found in Positional, check in Level of Detail Representations
+                                    if (!representationFound)
                                     {
-                                        // Try to get the design view representation by name
-                                        DesignViewRepresentation? designViewRep = null;
+                                        Console.WriteLine("Available level of detail representations:");
+                                        foreach (LevelOfDetailRepresentation rep in repManager.LevelOfDetailRepresentations)
+                                        {
+                                            Console.WriteLine($"- Level of Detail: {rep.Name}");
 
-                                        // Use the Item method to get the representation by name
+                                            if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                Console.WriteLine($"Activating level of detail representation: {rep.Name}");
+                                                rep.Activate();
+                                                representationFound = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if (!representationFound)
+                                    {
+                                        Console.WriteLine($"Warning: Could not find representation named '{update.Representations}'");
+
+                                        // Try to find the representation by name in the collection
                                         try
                                         {
-                                            designViewRep = repManager.DesignViewRepresentations[update.Representations];
-                                            if (designViewRep != null)
+                                            // Try to get the design view representation by name
+                                            DesignViewRepresentation? designViewRep = null;
+
+                                            // Use the Item method to get the representation by name
+                                            try
                                             {
-                                                designViewRep.Activate();
-                                                Console.WriteLine($"Successfully activated design view representation by name: {update.Representations}");
-                                                representationFound = true;
+                                                designViewRep = repManager.DesignViewRepresentations[update.Representations];
+                                                if (designViewRep != null)
+                                                {
+                                                    designViewRep.Activate();
+                                                    Console.WriteLine($"Successfully activated design view representation by name: {update.Representations}");
+                                                    representationFound = true;
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Could not find design view representation by name: {ex.Message}");
                                             }
                                         }
                                         catch (Exception ex)
                                         {
-                                            Console.WriteLine($"Could not find design view representation by name: {ex.Message}");
+                                            Console.WriteLine($"Error trying to access representation by name: {ex.Message}");
                                         }
                                     }
-                                    catch (Exception ex)
-                                    {
-                                        Console.WriteLine($"Error trying to access representation by name: {ex.Message}");
-                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Error activating representation: {ex.Message}");
                                 }
                             }
-                            catch (Exception ex)
+
+                            // Make sure to update the view and save
+                            _inventorApp.ActiveView.Update();
+                            asmDoc.Save();
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Document is not an assembly: {assemblyFilePath}");
+                        }
+                    }
+                    finally
+                    {
+                        if (doc != null)
+                        {
+                            try
                             {
-                                Console.WriteLine($"Error activating representation: {ex.Message}");
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"Error closing document: {e.Message}");
                             }
                         }
-
-                        // Make sure to update the view and save
-                        _inventorApp.ActiveView.Update();
-                        asmDoc.Save();
-                        asmDoc.Close();
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Document is not an assembly: {assemblyFilePath}");
-                        doc.Close();
                     }
                 }
 
@@ -1150,7 +1228,34 @@ namespace InventorApp.API.Services
                 Console.Error.WriteLine($"Error updating model states and representations: {ex.Message}");
                 return false;
             }
-        }
+            finally
+            {
+                if (_inventorApp != null)
+                {
+                    try
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            Document doc = _inventorApp.Documents[1];
+                            doc.Close(true);
+                        }
 
+                        // Quit Inventor and release COM object
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Error closing Inventor application: {e.Message}");
+                    }
+                }
+            }
+        }
     }
 }

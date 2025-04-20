@@ -47,6 +47,15 @@ namespace InventorApp.API.Services
             if (configuration.LvTrunkingDetails != null)
                 existingConfig.LvTrunkingDetails = configuration.LvTrunkingDetails;
 
+            if (configuration.LvHvTurretDetails != null)
+                existingConfig.LvHvTurretDetails = configuration.LvHvTurretDetails;
+
+            if (configuration.ConservatorDetails != null)
+                existingConfig.ConservatorDetails = configuration.ConservatorDetails;
+
+            if (configuration.ConservatorSupportDetails != null)
+                existingConfig.ConservatorSupportDetails = configuration.ConservatorSupportDetails;
+
             return await _repository.UpdateAsync(existingConfig);
         }
 
