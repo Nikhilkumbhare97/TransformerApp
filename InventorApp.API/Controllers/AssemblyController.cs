@@ -61,7 +61,7 @@ namespace InventorAPI.Controllers
             }
 
             _assemblyService.SuppressMultipleComponents(request.SuppressActions);
-            return Ok(new { message = "Multiple components processed successfully." });
+            return Ok(new { message = "Multiple components updated successfully." });
         }
 
 
@@ -105,7 +105,7 @@ namespace InventorAPI.Controllers
             }
 
             bool success = _assemblyService.UpdateIpartsAndIassemblies(request.AssemblyUpdates);
-            return Ok(new { success });
+            return Ok(new { message = "Iparts Iassemblies updated successfully." });
         }
 
         [HttpPost("update-model-state-and-representations")]
