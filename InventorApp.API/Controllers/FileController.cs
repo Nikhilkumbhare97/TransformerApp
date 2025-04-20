@@ -34,7 +34,12 @@ namespace InventorApp.API.Controllers
 
             if (!Directory.Exists(sourceDir))
             {
-                return BadRequest("Source folder does not exist.");
+                return BadRequest(new { message = "Source folder does not exist." });
+            }
+
+            if (Directory.Exists(destDir))
+            {
+                return Conflict(new { message = "Destination folder already exists." });
             }
 
             try
@@ -52,11 +57,11 @@ namespace InventorApp.API.Controllers
                     System.IO.File.Copy(filePath, destFilePath, true);
                 }
 
-                return Ok($"Folder copied successfully to {destDir}");
+                return Ok(new { message = $"Folder copied successfully to {destDir}" });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Error copying folder: {ex.Message}");
+                return StatusCode(500, new { message = $"Error copying folder: {ex.Message}" });
             }
         }
 

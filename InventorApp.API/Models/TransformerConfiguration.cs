@@ -27,5 +27,15 @@ namespace InventorApp.API.Models
 
         [Column("lv_trunking_details", TypeName = "json")]
         public string? LvTrunkingDetails { get; set; }
+
+        [Column("lv_hv_turret_details", TypeName = "json")]
+        public string? LvHvTurretDetails { get; set; }
+
+        [Column("conservator_details", TypeName = "json")]
+        public string? ConservatorDetails { get; set; }
+
+        [Column("conservator_support_details", TypeName = "json")]
+        public string? ConservatorSupportDetails { get; set; }
+
     }
-} 
+}
