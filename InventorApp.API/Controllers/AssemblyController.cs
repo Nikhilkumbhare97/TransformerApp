@@ -61,7 +61,7 @@ namespace InventorAPI.Controllers
             }
 
             _assemblyService.SuppressMultipleComponents(request.SuppressActions);
-            return Ok(new { message = "Multiple components processed successfully." });
+            return Ok(new { message = "Multiple components updated successfully." });
         }
 
 
@@ -86,16 +86,6 @@ namespace InventorAPI.Controllers
             }
         }
 
-        [HttpPost("update-properties")]
-        public IActionResult UpdateProperties([FromBody] UpdatePropertiesRequest request)
-        {
-            if (request.AssemblyUpdates == null || request.AssemblyUpdates.Count == 0)
-                return BadRequest("Invalid request: assemblyUpdates cannot be empty.");
-
-            bool success = _assemblyService.UpdateIPropertiesForAssemblies(request.AssemblyUpdates);
-            return success ? Ok("iProperties updated successfully for all assemblies.") : StatusCode(500, "Failed to update iProperties.");
-        }
-
         [HttpPost("update-multiple-iparts-iassemblies")]
         public IActionResult UpdateIpartsAndIassemblies([FromBody] UpdateIpartsRequest request)
         {
@@ -105,7 +95,7 @@ namespace InventorAPI.Controllers
             }
 
             bool success = _assemblyService.UpdateIpartsAndIassemblies(request.AssemblyUpdates);
-            return Ok(new { success });
+            return Ok(new { message = "Iparts Iassemblies updated successfully." });
         }
 
         [HttpPost("update-model-state-and-representations")]

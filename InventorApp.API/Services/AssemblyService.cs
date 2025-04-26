@@ -16,6 +16,29 @@ namespace InventorApp.API.Services
 
         public bool IsAssemblyOpen => _isAssemblyOpen;
 
+        private Inventor.Application GetInventorApplication()
+        {
+            if (_inventorApp == null)
+            {
+                try
+                {
+                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
+                    if (inventorType == null)
+                    {
+                        throw new InvalidOperationException("Autodesk Inventor is not installed or registered. Please ensure Inventor is installed and properly registered.");
+                    }
+
+                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
+                    _inventorApp.Visible = true;
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Failed to initialize Inventor application: {ex.Message}. Please ensure Inventor is running and properly registered.", ex);
+                }
+            }
+            return _inventorApp;
+        }
+
         public void OpenAssembly(string assemblyPath)
         {
             try
@@ -77,16 +100,8 @@ namespace InventorApp.API.Services
             Document? partDoc = null;
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
-
-                partDoc = _inventorApp.Documents.Open(partFilePath);
+                var inventorApp = GetInventorApplication();
+                partDoc = inventorApp.Documents.Open(partFilePath);
                 PartDocument part = (PartDocument)partDoc;
                 Parameters paramList = part.ComponentDefinition.Parameters;
 
@@ -140,28 +155,30 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                if (partDoc != null)
+                // Cleanup Inventor and COM objects
+                try
                 {
-                    try
+                    if (partDoc != null)
                     {
                         partDoc.Close();
                         Marshal.ReleaseComObject(partDoc);
                     }
-                    catch (Exception e)
-                    {
-                        Console.Error.WriteLine($"Error closing document: {e.Message}");
-                    }
-                }
 
-                if (_inventorApp != null)
-                {
-                    try
+                    if (_inventorApp != null)
                     {
                         // Close all remaining documents
                         while (_inventorApp.Documents.Count > 0)
                         {
-                            Document doc = _inventorApp.Documents[1];
-                            doc.Close(true);
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
                         }
 
                         // Quit Inventor and release COM object
@@ -173,10 +190,10 @@ namespace InventorApp.API.Services
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
-                    catch (Exception e)
-                    {
-                        Console.Error.WriteLine($"Error closing Inventor application: {e.Message}");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
                 }
             }
         }
@@ -242,40 +259,78 @@ namespace InventorApp.API.Services
         {
             try
             {
+                var inventorApp = GetInventorApplication();
+
                 foreach (var action in suppressActions)
                 {
                     string assemblyPath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", action.AssemblyFilePath);
 
                     foreach (var component in action.Components)
                     {
-                        SuppressComponent(assemblyPath, component, action.Suppress);
+                        try
+                        {
+                            SuppressComponent(assemblyPath, component, action.Suppress);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"Error suppressing component {component} in {assemblyPath}: {ex.Message}");
+                            // Continue with next component
+                        }
                     }
                 }
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"Error suppressing multiple components: {e.Message}");
+                Console.Error.WriteLine($"Error in SuppressMultipleComponents: {e.Message}");
                 throw;
             }
-        }
+            finally
+            {
+                // Cleanup Inventor and COM objects
+                try
+                {
+                    if (_inventorApp != null)
+                    {
+                        // Close all open documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
+                        }
 
+                        // Quit Inventor
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                }
+            }
+        }
 
         public void SuppressComponent(string filePath, string componentName, bool suppress)
         {
             try
             {
-                // Ensure Inventor is running
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
+                var inventorApp = GetInventorApplication();
 
                 // Open the document
-                Inventor.Document doc = _inventorApp.Documents.Open(filePath, true);
+                Inventor.Document doc = inventorApp.Documents.Open(filePath, true);
 
                 // Check the document type before casting
                 if (doc is Inventor.AssemblyDocument asmDoc)
@@ -341,13 +396,6 @@ namespace InventorApp.API.Services
             }
 
             throw new Exception($"Feature '{featureName}' not found in part.");
-        }
-
-
-
-        internal bool UpdateIPropertiesForAssemblies(List<Dictionary<string, object>> assemblyUpdates)
-        {
-            throw new NotImplementedException();
         }
 
         public bool UpdateIPropertiesForAllFiles(string directoryPath, Dictionary<string, string> iProperties)
@@ -673,223 +721,241 @@ namespace InventorApp.API.Services
         {
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
+                var inventorApp = GetInventorApplication();
 
                 foreach (var update in assemblyUpdates)
                 {
                     string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", update.AssemblyFilePath);
 
-                    AssemblyDocument assemblyDoc = (AssemblyDocument)_inventorApp.Documents.Open(assemblyFilePath);
-                    ComponentOccurrences occurrences = assemblyDoc.ComponentDefinition.Occurrences;
-
-                    foreach (var (oldComponent, newComponent) in update.IpartsIassemblies)
+                    AssemblyDocument? assemblyDoc = null;
+                    try
                     {
-                        ComponentOccurrence? occurrence = occurrences.Cast<ComponentOccurrence>()
-                            .FirstOrDefault(o => o.Name.Equals(oldComponent, StringComparison.OrdinalIgnoreCase));
+                        assemblyDoc = (AssemblyDocument)inventorApp.Documents.Open(assemblyFilePath);
+                        ComponentOccurrences occurrences = assemblyDoc.ComponentDefinition.Occurrences;
 
-                        if (occurrence != null)
+                        foreach (var (oldComponent, newComponent) in update.IpartsIassemblies)
                         {
-                            Console.WriteLine($"Processing component: {oldComponent}");
+                            ComponentOccurrence? occurrence = occurrences.Cast<ComponentOccurrence>()
+                                .FirstOrDefault(o => o.Name.Equals(oldComponent, StringComparison.OrdinalIgnoreCase));
 
-                            if (occurrence.Definition is PartComponentDefinition partDef && partDef.IsiPartMember)
+                            if (occurrence != null)
                             {
-                                Console.WriteLine($"Changing iPart {oldComponent} to {newComponent}");
-                                try
+                                Console.WriteLine($"Processing component: {oldComponent}");
+
+                                if (occurrence.Definition is PartComponentDefinition partDef && partDef.IsiPartMember)
                                 {
-                                    // Parse the occurrence name to get the base name and instance number
-                                    string[] parts = oldComponent.Split(':');
-                                    if (parts.Length == 2)
+                                    Console.WriteLine($"Changing iPart {oldComponent} to {newComponent}");
+                                    try
                                     {
-                                        string baseName = parts[0];
-                                        if (int.TryParse(parts[1], out int instanceNumber))
+                                        // Parse the occurrence name to get the base name and instance number
+                                        string[] parts = oldComponent.Split(':');
+                                        if (parts.Length == 2)
                                         {
-                                            // Find the specific occurrence in the assembly
-                                            ComponentOccurrence? targetOccurrence = null;
-                                            foreach (ComponentOccurrence occ in occurrences)
+                                            string baseName = parts[0];
+                                            if (int.TryParse(parts[1], out int instanceNumber))
                                             {
-                                                if (occ.Name.StartsWith(baseName) && occ.Name.Contains(":" + instanceNumber))
+                                                // Find the specific occurrence in the assembly
+                                                ComponentOccurrence? targetOccurrence = null;
+                                                foreach (ComponentOccurrence occ in occurrences)
                                                 {
-                                                    targetOccurrence = occ;
-                                                    break;
+                                                    if (occ.Name.StartsWith(baseName) && occ.Name.Contains(":" + instanceNumber))
+                                                    {
+                                                        targetOccurrence = occ;
+                                                        break;
+                                                    }
                                                 }
-                                            }
 
-                                            if (targetOccurrence != null)
-                                            {
-                                                // Get the factory document path
-                                                string docPath = targetOccurrence.ReferencedDocumentDescriptor.FullDocumentName;
-#pragma warning disable CS8604 // Possible null reference argument.
-                                                string factoryPath = System.IO.Path.Combine(
-                                                    System.IO.Path.GetDirectoryName(docPath),
-                                                    System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".ipt");
-#pragma warning restore CS8604 // Possible null reference argument.
+                                                if (targetOccurrence != null)
+                                                {
+                                                    // Get the factory document path
+                                                    string docPath = targetOccurrence.ReferencedDocumentDescriptor.FullDocumentName;
+                                                    string? directoryPath = System.IO.Path.GetDirectoryName(docPath);
+                                                    if (directoryPath == null)
+                                                    {
+                                                        throw new InvalidOperationException($"Could not get directory path for document: {docPath}");
+                                                    }
+                                                    string factoryPath = System.IO.Path.Combine(
+                                                        directoryPath,
+                                                        System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".ipt");
 
-                                                // Create the new member file path
-#pragma warning disable CS8604 // Possible null reference argument.
-                                                string newMemberPath = System.IO.Path.Combine(
-                                                    System.IO.Path.GetDirectoryName(factoryPath),
-                                                    newComponent + ".ipt");
-#pragma warning restore CS8604 // Possible null reference argument.
+                                                    // Create the new member file path
+                                                    string newMemberPath = System.IO.Path.Combine(
+                                                        directoryPath,
+                                                        newComponent + ".ipt");
 
-                                                // Replace the occurrence with the new member
-                                                targetOccurrence.Replace(newMemberPath, false);
+                                                    // Replace the occurrence with the new member
+                                                    targetOccurrence.Replace(newMemberPath, false);
 
-                                                Console.WriteLine($"Successfully replaced iPart instance {oldComponent} with {newComponent}");
+                                                    Console.WriteLine($"Successfully replaced iPart instance {oldComponent} with {newComponent}");
+                                                }
+                                                else
+                                                {
+                                                    Console.WriteLine($"Could not find specific occurrence {oldComponent}");
+                                                }
                                             }
                                             else
                                             {
-                                                Console.WriteLine($"Could not find specific occurrence {oldComponent}");
+                                                Console.WriteLine($"Could not parse instance number from {oldComponent}");
                                             }
                                         }
                                         else
                                         {
-                                            Console.WriteLine($"Could not parse instance number from {oldComponent}");
-                                        }
-                                    }
-                                    else
-                                    {
-                                        // If the component name doesn't have an instance number, try direct replacement
-#pragma warning disable CS8604 // Possible null reference argument.
-                                        string newPath = System.IO.Path.Combine(
-                                            System.IO.Path.GetDirectoryName(occurrence.ReferencedDocumentDescriptor.FullDocumentName),
-                                            newComponent + ".ipt");
-#pragma warning restore CS8604 // Possible null reference argument.
-
-                                        if (System.IO.File.Exists(newPath))
-                                        {
-                                            occurrence.Replace(newPath, false);
-                                            Console.WriteLine($"Successfully replaced iPart {oldComponent} with {newComponent}");
-                                        }
-                                        else
-                                        {
-                                            Console.WriteLine($"Could not find iPart file: {newPath}");
-                                        }
-                                    }
-                                }
-                                catch (Exception e)
-                                {
-                                    Console.WriteLine($"Error updating iPart: {e.Message}");
-                                }
-                            }
-                            else if (occurrence.Definition is AssemblyComponentDefinition asmDef && asmDef.IsiAssemblyMember)
-                            {
-                                Console.WriteLine($"Changing iAssembly {oldComponent} to {newComponent}");
-                                try
-                                {
-                                    // Parse the occurrence name to get the base name and instance number
-                                    string[] parts = oldComponent.Split(':');
-                                    if (parts.Length == 2)
-                                    {
-                                        string baseName = parts[0];
-                                        if (int.TryParse(parts[1], out int instanceNumber))
-                                        {
-                                            // Find the specific occurrence in the assembly
-                                            ComponentOccurrence? targetOccurrence = null;
-                                            foreach (ComponentOccurrence occ in occurrences)
+                                            // If the component name doesn't have an instance number, try direct replacement
+                                            string? refDocPath = occurrence.ReferencedDocumentDescriptor.FullDocumentName;
+                                            string? refDirectoryPath = System.IO.Path.GetDirectoryName(refDocPath);
+                                            if (refDirectoryPath == null)
                                             {
-                                                if (occ.Name.StartsWith(baseName) && occ.Name.Contains(":" + instanceNumber))
-                                                {
-                                                    targetOccurrence = occ;
-                                                    break;
-                                                }
+                                                throw new InvalidOperationException($"Could not get directory path for referenced document: {refDocPath}");
                                             }
+                                            string newPath = System.IO.Path.Combine(
+                                                refDirectoryPath,
+                                                newComponent + ".ipt");
 
-                                            if (targetOccurrence != null)
+                                            if (System.IO.File.Exists(newPath))
                                             {
-                                                // Get the factory document path
-                                                string docPath = targetOccurrence.ReferencedDocumentDescriptor.FullDocumentName;
-#pragma warning disable CS8604 // Possible null reference argument.
-                                                string factoryPath = System.IO.Path.Combine(
-                                                    System.IO.Path.GetDirectoryName(docPath),
-                                                    System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".iam");
-#pragma warning restore CS8604 // Possible null reference argument.
-
-                                                // Create the new member file path
-#pragma warning disable CS8604 // Possible null reference argument.
-                                                string newMemberPath = System.IO.Path.Combine(
-                                                    System.IO.Path.GetDirectoryName(factoryPath),
-                                                    newComponent + ".iam");
-#pragma warning restore CS8604 // Possible null reference argument.
-
-                                                // Replace the occurrence with the new member
-                                                targetOccurrence.Replace(newMemberPath, false);
-
-                                                Console.WriteLine($"Successfully replaced iAssembly instance {oldComponent} with {newComponent}");
+                                                occurrence.Replace(newPath, false);
+                                                Console.WriteLine($"Successfully replaced iPart {oldComponent} with {newComponent}");
                                             }
                                             else
                                             {
-                                                Console.WriteLine($"Could not find specific occurrence {oldComponent}");
+                                                Console.WriteLine($"Could not find iPart file: {newPath}");
+                                            }
+                                        }
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine($"Error updating iPart: {e.Message}");
+                                    }
+                                }
+                                else if (occurrence.Definition is AssemblyComponentDefinition asmDef && asmDef.IsiAssemblyMember)
+                                {
+                                    Console.WriteLine($"Changing iAssembly {oldComponent} to {newComponent}");
+                                    try
+                                    {
+                                        // Parse the occurrence name to get the base name and instance number
+                                        string[] parts = oldComponent.Split(':');
+                                        if (parts.Length == 2)
+                                        {
+                                            string baseName = parts[0];
+                                            if (int.TryParse(parts[1], out int instanceNumber))
+                                            {
+                                                // Find the specific occurrence in the assembly
+                                                ComponentOccurrence? targetOccurrence = null;
+                                                foreach (ComponentOccurrence occ in occurrences)
+                                                {
+                                                    if (occ.Name.StartsWith(baseName) && occ.Name.Contains(":" + instanceNumber))
+                                                    {
+                                                        targetOccurrence = occ;
+                                                        break;
+                                                    }
+                                                }
+
+                                                if (targetOccurrence != null)
+                                                {
+                                                    // Get the factory document path
+                                                    string docPath = targetOccurrence.ReferencedDocumentDescriptor.FullDocumentName;
+                                                    string? directoryPath = System.IO.Path.GetDirectoryName(docPath);
+                                                    if (directoryPath == null)
+                                                    {
+                                                        throw new InvalidOperationException($"Could not get directory path for document: {docPath}");
+                                                    }
+                                                    string factoryPath = System.IO.Path.Combine(
+                                                        directoryPath,
+                                                        System.IO.Path.GetFileNameWithoutExtension(docPath).Split(':')[0] + ".iam");
+
+                                                    // Create the new member file path
+                                                    string newMemberPath = System.IO.Path.Combine(
+                                                        directoryPath,
+                                                        newComponent + ".iam");
+
+                                                    // Replace the occurrence with the new member
+                                                    targetOccurrence.Replace(newMemberPath, false);
+
+                                                    Console.WriteLine($"Successfully replaced iAssembly instance {oldComponent} with {newComponent}");
+                                                }
+                                                else
+                                                {
+                                                    Console.WriteLine($"Could not find specific occurrence {oldComponent}");
+                                                }
+                                            }
+                                            else
+                                            {
+                                                Console.WriteLine($"Could not parse instance number from {oldComponent}");
                                             }
                                         }
                                         else
                                         {
-                                            Console.WriteLine($"Could not parse instance number from {oldComponent}");
+                                            // If the component name doesn't have an instance number, try direct replacement
+                                            string? refDocPath = occurrence.ReferencedDocumentDescriptor.FullDocumentName;
+                                            string? refDirectoryPath = System.IO.Path.GetDirectoryName(refDocPath);
+                                            if (refDirectoryPath == null)
+                                            {
+                                                throw new InvalidOperationException($"Could not get directory path for referenced document: {refDocPath}");
+                                            }
+                                            string newPath = System.IO.Path.Combine(
+                                                refDirectoryPath,
+                                                newComponent + ".iam");
+
+                                            if (System.IO.File.Exists(newPath))
+                                            {
+                                                occurrence.Replace(newPath, false);
+                                                Console.WriteLine($"Successfully replaced iAssembly {oldComponent} with {newComponent}");
+                                            }
+                                            else
+                                            {
+                                                Console.WriteLine($"Could not find iAssembly file: {newPath}");
+                                            }
                                         }
                                     }
-                                    else
+                                    catch (Exception e)
                                     {
-                                        // If the component name doesn't have an instance number, try direct replacement
-#pragma warning disable CS8604 // Possible null reference argument.
-                                        string newPath = System.IO.Path.Combine(
-                                            System.IO.Path.GetDirectoryName(occurrence.ReferencedDocumentDescriptor.FullDocumentName),
-                                            newComponent + ".iam");
-#pragma warning restore CS8604 // Possible null reference argument.
-
-                                        if (System.IO.File.Exists(newPath))
-                                        {
-                                            occurrence.Replace(newPath, false);
-                                            Console.WriteLine($"Successfully replaced iAssembly {oldComponent} with {newComponent}");
-                                        }
-                                        else
-                                        {
-                                            Console.WriteLine($"Could not find iAssembly file: {newPath}");
-                                        }
+                                        Console.WriteLine($"Error updating iAssembly: {e.Message}");
                                     }
                                 }
-                                catch (Exception e)
+                                else
                                 {
-                                    Console.WriteLine($"Error updating iAssembly: {e.Message}");
+                                    Console.WriteLine($"Replacing normal component: {oldComponent} with {newComponent}");
+                                    try
+                                    {
+                                        occurrence.Replace(newComponent, false);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine($"Error replacing component: {e.Message}");
+                                    }
                                 }
                             }
                             else
                             {
-                                Console.WriteLine($"Replacing normal component: {oldComponent} with {newComponent}");
-                                try
-                                {
-                                    occurrence.Replace(newComponent, false);
-                                }
-                                catch (Exception e)
-                                {
-                                    Console.WriteLine($"Error replacing component: {e.Message}");
-                                }
+                                Console.WriteLine($"Component {oldComponent} not found in {assemblyFilePath}");
                             }
                         }
-                        else
-                        {
-                            Console.WriteLine($"Component {oldComponent} not found in {assemblyFilePath}");
-                        }
-                    }
 
-                    try
-                    {
-                        assemblyDoc.Update();
-                        _inventorApp.ActiveView.Update();
-                        assemblyDoc.Save();
-                    }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"Error saving assembly: {e.Message}");
+                        try
+                        {
+                            assemblyDoc.Update();
+                            inventorApp.ActiveView.Update();
+                            assemblyDoc.Save();
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"Error saving assembly: {e.Message}");
+                        }
                     }
                     finally
                     {
-                        assemblyDoc.Close();
+                        if (assemblyDoc != null)
+                        {
+                            try
+                            {
+                                assemblyDoc.Close();
+                                Marshal.ReleaseComObject(assemblyDoc);
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"Error closing assembly document: {e.Message}");
+                            }
+                        }
                     }
                 }
 
@@ -899,6 +965,43 @@ namespace InventorApp.API.Services
             {
                 Console.Error.WriteLine($"Error updating iParts/iAssemblies: {ex.Message}");
                 return false;
+            }
+            finally
+            {
+                // Cleanup Inventor and COM objects
+                try
+                {
+                    if (_inventorApp != null)
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
+                        }
+
+                        // Quit Inventor and release COM object
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                }
             }
         }
 
@@ -1008,8 +1111,6 @@ namespace InventorApp.API.Services
             }
         }
 
-
-
         private int GetIpartRowIndex(iPartFactory factory, string newComponentName)
         {
             for (int i = 0; i < factory.TableRows.Count; i++) // Fixed loop condition
@@ -1044,14 +1145,7 @@ namespace InventorApp.API.Services
         {
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
-
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = true;
-                }
+                var inventorApp = GetInventorApplication();
 
                 foreach (var update in updates)
                 {
@@ -1066,7 +1160,7 @@ namespace InventorApp.API.Services
                     Document? doc = null;
                     try
                     {
-                        doc = _inventorApp.Documents.Open(assemblyFilePath);
+                        doc = inventorApp.Documents.Open(assemblyFilePath);
 
                         if (doc is AssemblyDocument asmDoc)
                         {
@@ -1103,15 +1197,11 @@ namespace InventorApp.API.Services
                                     // Get the representations manager
                                     RepresentationsManager repManager = asmDoc.ComponentDefinition.RepresentationsManager;
 
-                                    // First check in Design View Representations (which is what we see in the tree)
+                                    // First check in Design View Representations
                                     bool representationFound = false;
 
-                                    // Log available design view representations for debugging
-                                    Console.WriteLine("Available design view representations:");
                                     foreach (DesignViewRepresentation rep in repManager.DesignViewRepresentations)
                                     {
-                                        Console.WriteLine($"- Design View: {rep.Name}");
-
                                         if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                         {
                                             Console.WriteLine($"Activating design view representation: {rep.Name}");
@@ -1124,11 +1214,8 @@ namespace InventorApp.API.Services
                                     // If not found in Design Views, check in Positional Representations
                                     if (!representationFound)
                                     {
-                                        Console.WriteLine("Available positional representations:");
                                         foreach (PositionalRepresentation rep in repManager.PositionalRepresentations)
                                         {
-                                            Console.WriteLine($"- Positional: {rep.Name}");
-
                                             if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                             {
                                                 Console.WriteLine($"Activating positional representation: {rep.Name}");
@@ -1142,11 +1229,8 @@ namespace InventorApp.API.Services
                                     // If not found in Positional, check in Level of Detail Representations
                                     if (!representationFound)
                                     {
-                                        Console.WriteLine("Available level of detail representations:");
                                         foreach (LevelOfDetailRepresentation rep in repManager.LevelOfDetailRepresentations)
                                         {
-                                            Console.WriteLine($"- Level of Detail: {rep.Name}");
-
                                             if (rep.Name.Equals(update.Representations, StringComparison.OrdinalIgnoreCase))
                                             {
                                                 Console.WriteLine($"Activating level of detail representation: {rep.Name}");
@@ -1160,33 +1244,6 @@ namespace InventorApp.API.Services
                                     if (!representationFound)
                                     {
                                         Console.WriteLine($"Warning: Could not find representation named '{update.Representations}'");
-
-                                        // Try to find the representation by name in the collection
-                                        try
-                                        {
-                                            // Try to get the design view representation by name
-                                            DesignViewRepresentation? designViewRep = null;
-
-                                            // Use the Item method to get the representation by name
-                                            try
-                                            {
-                                                designViewRep = repManager.DesignViewRepresentations[update.Representations];
-                                                if (designViewRep != null)
-                                                {
-                                                    designViewRep.Activate();
-                                                    Console.WriteLine($"Successfully activated design view representation by name: {update.Representations}");
-                                                    representationFound = true;
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                Console.WriteLine($"Could not find design view representation by name: {ex.Message}");
-                                            }
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            Console.WriteLine($"Error trying to access representation by name: {ex.Message}");
-                                        }
                                     }
                                 }
                                 catch (Exception ex)
@@ -1196,7 +1253,7 @@ namespace InventorApp.API.Services
                             }
 
                             // Make sure to update the view and save
-                            _inventorApp.ActiveView.Update();
+                            inventorApp.ActiveView.Update();
                             asmDoc.Save();
                         }
                         else
@@ -1230,15 +1287,24 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                if (_inventorApp != null)
+                // Cleanup Inventor and COM objects
+                try
                 {
-                    try
+                    if (_inventorApp != null)
                     {
                         // Close all remaining documents
                         while (_inventorApp.Documents.Count > 0)
                         {
-                            Document doc = _inventorApp.Documents[1];
-                            doc.Close(true);
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
                         }
 
                         // Quit Inventor and release COM object
@@ -1250,10 +1316,10 @@ namespace InventorApp.API.Services
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"Error closing Inventor application: {e.Message}");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
                 }
             }
         }
