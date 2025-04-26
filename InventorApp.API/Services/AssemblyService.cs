@@ -167,7 +167,9 @@ namespace InventorApp.API.Services
                     if (_inventorApp != null)
                     {
                         // Close all remaining documents
-                        while (_inventorApp.Documents.Count > 0)
+                        int maxAttempts = 2; // Prevent infinite loop
+                        int currentAttempt = 0;
+                        while (_inventorApp.Documents.Count > 0 && currentAttempt < maxAttempts)
                         {
                             try
                             {
@@ -178,7 +180,13 @@ namespace InventorApp.API.Services
                             catch (Exception ex)
                             {
                                 Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                                currentAttempt++;
                             }
+                        }
+
+                        if (currentAttempt >= maxAttempts)
+                        {
+                            Console.Error.WriteLine("Warning: Could not close all documents after maximum attempts");
                         }
 
                         // Quit Inventor and release COM object
@@ -404,26 +412,22 @@ namespace InventorApp.API.Services
 
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
+                var inventorApp = GetInventorApplication();
 
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = false;
-                }
-
-                Documents docs = _inventorApp.Documents;
+                Documents docs = inventorApp.Documents;
                 if (!Directory.Exists(directoryPath))
                 {
                     Console.WriteLine($"Error: Directory not found -> {directoryPath}");
                     return false;
                 }
 
-                // Get all Inventor files
-                var files = Directory.GetFiles(directoryPath)
-                    .Where(f => f.EndsWith(".iam", StringComparison.OrdinalIgnoreCase) ||
-                               f.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase))
+                // Get all Inventor files, excluding those in OldVersions folders
+                var files = Directory.GetFiles(directoryPath, "*.*", SearchOption.AllDirectories)
+                    .Where(f => f.IndexOf("OldVersions", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                f.IndexOf("BOUGHT OUT", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                f.IndexOf("ALLUSERSPROFILE", StringComparison.OrdinalIgnoreCase) < 0 &&
+                            (f.EndsWith(".iam", StringComparison.OrdinalIgnoreCase) ||
+                                f.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase)))
                     .Select(f => new FileInfo(f))
                     .ToList();
 
@@ -439,10 +443,11 @@ namespace InventorApp.API.Services
                     .ThenByDescending(f => f.Name) // Then by name descending
                     .ToList();
 
-                Console.WriteLine("\nSorted File Order:");
+                Console.WriteLine($"\nFound {sortedFiles.Count} files to process (excluding OldVersions folders):");
                 string partPrefix = iProperties.GetValueOrDefault("partPrefix", "");
 
-                _inventorApp.SilentOperation = true;
+                inventorApp.SilentOperation = true;
+                inventorApp.Visible = false; // Hide Inventor window during processing
 
                 foreach (var file in sortedFiles)
                 {
@@ -453,34 +458,48 @@ namespace InventorApp.API.Services
                     Document? inventorDoc = null;
                     try
                     {
-                        inventorDoc = docs.Open(filePath);
+                        // Open document with full access
+                        inventorDoc = docs.Open(filePath, true);
                         PropertySets propSets = inventorDoc.PropertySets;
 
-                        string[] propertySetNames = {
-                    "Design Tracking Properties",
-                    "Summary Information",
-                    "Project Information"
-                };
-
+                        // Update properties in all property sets
                         foreach (var entry in iProperties)
                         {
                             if (entry.Key == "partPrefix") continue;
                             bool propertyUpdated = false;
 
-                            foreach (string setName in propertySetNames)
+                            // Try to update in each property set
+                            foreach (PropertySet propSet in propSets)
                             {
                                 try
                                 {
-                                    PropertySet propSet = propSets[setName];
-                                    Property prop = propSet[entry.Key];
-                                    prop.Value = entry.Value;
-                                    Console.WriteLine($"✅ Updated: {entry.Key} = {entry.Value}");
-                                    propertyUpdated = true;
-                                    break;
+                                    if (propSet.Name == "Design Tracking Properties" ||
+                                        propSet.Name == "Summary Information" ||
+                                        propSet.Name == "Project Information")
+                                    {
+                                        Property? prop = null;
+                                        try
+                                        {
+                                            prop = propSet[entry.Key];
+                                        }
+                                        catch
+                                        {
+                                            // Property doesn't exist in this set, try next set
+                                            continue;
+                                        }
+
+                                        if (prop != null)
+                                        {
+                                            prop.Value = entry.Value;
+                                            Console.WriteLine($"✅ Updated {entry.Key} = {entry.Value} in {propSet.Name}");
+                                            propertyUpdated = true;
+                                            break;
+                                        }
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
-                                    Console.WriteLine($"Warning: Could not update property {entry.Key} in {setName}: {ex.Message}");
+                                    Console.WriteLine($"Warning: Could not update property {entry.Key} in {propSet.Name}: {ex.Message}");
                                 }
                             }
 
@@ -491,24 +510,27 @@ namespace InventorApp.API.Services
                             }
                         }
 
-                        // Update Part Number
-                        try
+                        // Update Part Number if partPrefix is provided
+                        if (!string.IsNullOrEmpty(partPrefix))
                         {
-                            PropertySet designTrackingProps = propSets["Design Tracking Properties"];
-                            Property partNumberProp = designTrackingProps["Part Number"];
-                            string existingPartNumber = partNumberProp.Value?.ToString() ?? "";
+                            try
+                            {
+                                PropertySet designTrackingProps = propSets["Design Tracking Properties"];
+                                Property partNumberProp = designTrackingProps["Part Number"];
+                                string existingPartNumber = partNumberProp.Value?.ToString() ?? "";
 
-                            string newPartNumber = existingPartNumber.Contains("_")
-                                ? $"{partPrefix}_{existingPartNumber[(existingPartNumber.IndexOf('_') + 1)..]}"
-                                : $"{partPrefix}_{existingPartNumber}";
+                                string newPartNumber = existingPartNumber.Contains("_")
+                                    ? $"{partPrefix}_{existingPartNumber[(existingPartNumber.IndexOf('_') + 1)..]}"
+                                    : $"{partPrefix}_{existingPartNumber}";
 
-                            partNumberProp.Value = newPartNumber;
-                            Console.WriteLine($"✅ Updated: Part Number = {newPartNumber}");
-                        }
-                        catch (Exception e)
-                        {
-                            Console.WriteLine($"❌ Failed to update Part Number: {e.Message}");
-                            fileUpdated = false;
+                                partNumberProp.Value = newPartNumber;
+                                Console.WriteLine($"✅ Updated: Part Number = {newPartNumber}");
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"❌ Failed to update Part Number: {e.Message}");
+                                fileUpdated = false;
+                            }
                         }
 
                         // Update and save
@@ -560,6 +582,7 @@ namespace InventorApp.API.Services
                                 }
                             }
 
+                            // Update assembly components if it's an assembly
                             if (filePath.EndsWith(".iam", StringComparison.OrdinalIgnoreCase))
                             {
                                 try
@@ -611,38 +634,36 @@ namespace InventorApp.API.Services
                                             // Update iProperties for the component
                                             foreach (PropertySet propSet in compDoc.PropertySets)
                                             {
-                                                foreach (var entry in iProperties)
+                                                if (propSet.Name == "Design Tracking Properties" ||
+                                                    propSet.Name == "Summary Information" ||
+                                                    propSet.Name == "Project Information")
                                                 {
-                                                    try
+                                                    foreach (var entry in iProperties)
                                                     {
                                                         if (entry.Key == "partPrefix") continue;
-                                                        Property? prop = null;
-
-                                                        // Try to find the property in different property sets
-                                                        string[] compPropertySets = {
-                                                            "Design Tracking Properties",
-                                                            "Summary Information",
-                                                            "Project Information"
-                                                        };
-
-                                                        foreach (string setName in compPropertySets)
+                                                        try
                                                         {
+                                                            Property? prop = null;
                                                             try
                                                             {
                                                                 prop = propSet[entry.Key];
-                                                                if (prop != null)
-                                                                {
-                                                                    prop.Value = entry.Value;
-                                                                    Console.WriteLine($"✅ Updated {entry.Key} for component {occ.Name}");
-                                                                    break;
-                                                                }
                                                             }
-                                                            catch { }
+                                                            catch
+                                                            {
+                                                                // Property doesn't exist in this set, try next set
+                                                                continue;
+                                                            }
+
+                                                            if (prop != null)
+                                                            {
+                                                                prop.Value = entry.Value;
+                                                                Console.WriteLine($"✅ Updated {entry.Key} for component {occ.Name}");
+                                                            }
                                                         }
-                                                    }
-                                                    catch (Exception ex)
-                                                    {
-                                                        Console.WriteLine($"Warning: Could not update property {entry.Key} for component {occ.Name}: {ex.Message}");
+                                                        catch (Exception ex)
+                                                        {
+                                                            Console.WriteLine($"Warning: Could not update property {entry.Key} for component {occ.Name}: {ex.Message}");
+                                                        }
                                                     }
                                                 }
                                             }
@@ -661,7 +682,7 @@ namespace InventorApp.API.Services
                                 }
                             }
 
-                            _inventorApp.ActiveView.Update();
+                            inventorApp.ActiveView.Update();
                             inventorDoc.Save2(true);
                             Console.WriteLine($"💾 Save triggered for: {filePath}");
                         }
@@ -701,7 +722,7 @@ namespace InventorApp.API.Services
                 // Log failed files
                 if (failedFiles.Any())
                 {
-                    Console.WriteLine("\n⚠️ The following files were NOT updated:");
+                    Console.WriteLine($"\n⚠️ {failedFiles.Count} files were NOT updated:");
                     foreach (string failedFile in failedFiles)
                     {
                         Console.WriteLine($" - {failedFile}");
@@ -714,6 +735,43 @@ namespace InventorApp.API.Services
             {
                 Console.Error.WriteLine($"Error updating properties: {e.Message}");
                 return false;
+            }
+            finally
+            {
+                // Cleanup Inventor and COM objects
+                try
+                {
+                    if (_inventorApp != null)
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
+                        }
+
+                        // Quit Inventor and release COM object
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                }
             }
         }
 
