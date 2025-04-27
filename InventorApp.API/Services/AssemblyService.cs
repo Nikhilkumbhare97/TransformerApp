@@ -474,7 +474,7 @@ namespace InventorApp.API.Services
                         // Update properties in all property sets
                         foreach (var entry in iProperties)
                         {
-                            if (entry.Key == "partPrefix") continue;
+                            if (entry.Key == "partPrefix" || entry.Key == "originalPrefix") continue;
                             bool propertyUpdated = false;
 
                             // Try to update in each property set
@@ -484,7 +484,8 @@ namespace InventorApp.API.Services
                                 {
                                     if (propSet.Name == "Design Tracking Properties" ||
                                         propSet.Name == "Summary Information" ||
-                                        propSet.Name == "Project Information")
+                                        propSet.Name == "Project Information" ||
+                                        propSet.Name == "Inventor Document Summary Information")
                                     {
                                         Property? prop = null;
                                         try
@@ -554,16 +555,23 @@ namespace InventorApp.API.Services
                             {
                                 try
                                 {
-                                    // Update mass properties
-                                    MassProperties massProps = partDoc.ComponentDefinition.MassProperties;
-                                    massProps.Accuracy = 0; // Set to high accuracy
-                                    // Force mass properties update by accessing properties
-                                    double mass = massProps.Mass;
-                                    double volume = massProps.Volume;
-                                    double area = massProps.Area;
+                                    if (partDoc.ComponentDefinition.SurfaceBodies.Count == 0)
+                                    {
+                                        Console.WriteLine($"Skipping mass properties update for {filePath}: No solid bodies.");
+                                    }
+                                    else
+                                    {
+                                        // Update mass properties
+                                        MassProperties massProps = partDoc.ComponentDefinition.MassProperties;
+                                        massProps.Accuracy = 0; // Set to high accuracy
+                                        // Force mass properties update by accessing properties
+                                        double mass = massProps.Mass;
+                                        double volume = massProps.Volume;
+                                        double area = massProps.Area;
 
-                                    partDoc.Rebuild();
-                                    Console.WriteLine($"🔄 Mass properties updated and rebuild completed for part: {filePath}");
+                                        partDoc.Rebuild();
+                                        Console.WriteLine($"🔄 Mass properties updated and rebuild completed for part: {filePath}");
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
@@ -588,106 +596,6 @@ namespace InventorApp.API.Services
                                 catch (Exception ex)
                                 {
                                     Console.WriteLine($"Warning: Could not update mass properties for assembly: {ex.Message}");
-                                }
-                            }
-
-                            // Update assembly components if it's an assembly
-                            if (filePath.EndsWith(".iam", StringComparison.OrdinalIgnoreCase))
-                            {
-                                try
-                                {
-                                    AssemblyDocument asmDoc = (AssemblyDocument)inventorDoc;
-                                    // Update all components in the assembly
-                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
-                                    {
-                                        try
-                                        {
-                                            Document compDoc = (Document)occ.Definition.Document;
-
-                                            // Update component's mass properties
-                                            if (compDoc is PartDocument compPartDoc)
-                                            {
-                                                try
-                                                {
-                                                    MassProperties compMassProps = compPartDoc.ComponentDefinition.MassProperties;
-                                                    compMassProps.Accuracy = 0;
-                                                    // Force mass properties update by accessing properties
-                                                    double mass = compMassProps.Mass;
-                                                    double volume = compMassProps.Volume;
-                                                    double area = compMassProps.Area;
-                                                }
-                                                catch (Exception ex)
-                                                {
-                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
-                                                }
-                                            }
-                                            else if (compDoc is AssemblyDocument compAsmDoc)
-                                            {
-                                                try
-                                                {
-                                                    MassProperties compMassProps = compAsmDoc.ComponentDefinition.MassProperties;
-                                                    compMassProps.Accuracy = 0;
-                                                    // Force mass properties update by accessing properties
-                                                    double mass = compMassProps.Mass;
-                                                    double volume = compMassProps.Volume;
-                                                    double area = compMassProps.Area;
-                                                }
-                                                catch (Exception ex)
-                                                {
-                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
-                                                }
-                                            }
-
-                                            compDoc.Rebuild();
-
-                                            // Update iProperties for the component
-                                            foreach (PropertySet propSet in compDoc.PropertySets)
-                                            {
-                                                if (propSet.Name == "Design Tracking Properties" ||
-                                                    propSet.Name == "Summary Information" ||
-                                                    propSet.Name == "Project Information")
-                                                {
-                                                    foreach (var entry in iProperties)
-                                                    {
-                                                        if (entry.Key == "partPrefix") continue;
-                                                        try
-                                                        {
-                                                            Property? prop = null;
-                                                            try
-                                                            {
-                                                                prop = propSet[entry.Key];
-                                                            }
-                                                            catch
-                                                            {
-                                                                // Property doesn't exist in this set, try next set
-                                                                continue;
-                                                            }
-
-                                                            if (prop != null)
-                                                            {
-                                                                prop.Value = entry.Value;
-                                                                Console.WriteLine($"✅ Updated {entry.Key} for component {occ.Name}");
-                                                            }
-                                                        }
-                                                        catch (Exception ex)
-                                                        {
-                                                            Console.WriteLine($"Warning: Could not update property {entry.Key} for component {occ.Name}: {ex.Message}");
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine($"Warning: Could not update component {occ.Name}: {e.Message}");
-                                        }
-                                    }
-                                    Console.WriteLine($"🔄 Assembly components updated: {filePath}");
-                                }
-                                catch (Exception e)
-                                {
-                                    Console.WriteLine($"❌ Failed to update assembly: {e.Message}");
-                                    fileUpdated = false;
                                 }
                             }
 
