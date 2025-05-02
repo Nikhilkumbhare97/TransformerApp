@@ -167,7 +167,9 @@ namespace InventorApp.API.Services
                     if (_inventorApp != null)
                     {
                         // Close all remaining documents
-                        while (_inventorApp.Documents.Count > 0)
+                        int maxAttempts = 2; // Prevent infinite loop
+                        int currentAttempt = 0;
+                        while (_inventorApp.Documents.Count > 0 && currentAttempt < maxAttempts)
                         {
                             try
                             {
@@ -178,7 +180,13 @@ namespace InventorApp.API.Services
                             catch (Exception ex)
                             {
                                 Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                                currentAttempt++;
                             }
+                        }
+
+                        if (currentAttempt >= maxAttempts)
+                        {
+                            Console.Error.WriteLine("Warning: Could not close all documents after maximum attempts");
                         }
 
                         // Quit Inventor and release COM object
@@ -328,6 +336,7 @@ namespace InventorApp.API.Services
             try
             {
                 var inventorApp = GetInventorApplication();
+                inventorApp.SilentOperation = true; // Suppress dialogs
 
                 // Open the document
                 Inventor.Document doc = inventorApp.Documents.Open(filePath, true);
@@ -346,14 +355,18 @@ namespace InventorApp.API.Services
                     throw new InvalidOperationException($"Unsupported document type: {doc.DocumentType}");
                 }
 
-                // Save and close
-                doc.Save();
-                doc.Close();
+                doc.Save2(true); // Save all changes, suppressing dialogs
+                doc.Close(true); // Close and save
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"Error suppressing component: {e.Message}");
                 throw;
+            }
+            finally
+            {
+                if (_inventorApp != null)
+                    _inventorApp.SilentOperation = false; // Reset after operation
             }
         }
 
@@ -404,26 +417,26 @@ namespace InventorApp.API.Services
 
             try
             {
-                if (_inventorApp == null)
-                {
-                    Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
-                    if (inventorType == null) throw new InvalidOperationException("Autodesk Inventor is not installed or registered.");
+                var inventorApp = GetInventorApplication();
 
-                    _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
-                    _inventorApp.Visible = false;
-                }
-
-                Documents docs = _inventorApp.Documents;
+                Documents docs = inventorApp.Documents;
                 if (!Directory.Exists(directoryPath))
                 {
                     Console.WriteLine($"Error: Directory not found -> {directoryPath}");
                     return false;
                 }
 
-                // Get all Inventor files
-                var files = Directory.GetFiles(directoryPath)
-                    .Where(f => f.EndsWith(".iam", StringComparison.OrdinalIgnoreCase) ||
-                               f.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase))
+                string originalPrefix = iProperties.GetValueOrDefault("originalPrefix", "");
+
+                // Get all Inventor files, excluding unwanted folders
+                var files = Directory.GetFiles(directoryPath, "*.*", SearchOption.AllDirectories)
+                    .Where(f => f.IndexOf("OldVersions", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                f.IndexOf("BOUGHT OUT", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                f.IndexOf("ALLUSERSPROFILE", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                (f.EndsWith(".iam", StringComparison.OrdinalIgnoreCase) ||
+                                 f.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase)))
+                    .Where(f => System.IO.Path.GetFileNameWithoutExtension(f)
+                                 .StartsWith(originalPrefix, StringComparison.OrdinalIgnoreCase)) // <--- ADD THIS
                     .Select(f => new FileInfo(f))
                     .ToList();
 
@@ -439,10 +452,11 @@ namespace InventorApp.API.Services
                     .ThenByDescending(f => f.Name) // Then by name descending
                     .ToList();
 
-                Console.WriteLine("\nSorted File Order:");
+                Console.WriteLine($"\nFound {sortedFiles.Count} files to process (excluding OldVersions folders):");
                 string partPrefix = iProperties.GetValueOrDefault("partPrefix", "");
 
-                _inventorApp.SilentOperation = true;
+                inventorApp.SilentOperation = true;
+                inventorApp.Visible = false; // Hide Inventor window during processing
 
                 foreach (var file in sortedFiles)
                 {
@@ -453,34 +467,49 @@ namespace InventorApp.API.Services
                     Document? inventorDoc = null;
                     try
                     {
-                        inventorDoc = docs.Open(filePath);
+                        // Open document with full access
+                        inventorDoc = docs.Open(filePath, true);
                         PropertySets propSets = inventorDoc.PropertySets;
 
-                        string[] propertySetNames = {
-                    "Design Tracking Properties",
-                    "Summary Information",
-                    "Project Information"
-                };
-
+                        // Update properties in all property sets
                         foreach (var entry in iProperties)
                         {
-                            if (entry.Key == "partPrefix") continue;
+                            if (entry.Key == "partPrefix" || entry.Key == "originalPrefix") continue;
                             bool propertyUpdated = false;
 
-                            foreach (string setName in propertySetNames)
+                            // Try to update in each property set
+                            foreach (PropertySet propSet in propSets)
                             {
                                 try
                                 {
-                                    PropertySet propSet = propSets[setName];
-                                    Property prop = propSet[entry.Key];
-                                    prop.Value = entry.Value;
-                                    Console.WriteLine($"✅ Updated: {entry.Key} = {entry.Value}");
-                                    propertyUpdated = true;
-                                    break;
+                                    if (propSet.Name == "Design Tracking Properties" ||
+                                        propSet.Name == "Summary Information" ||
+                                        propSet.Name == "Project Information" ||
+                                        propSet.Name == "Inventor Document Summary Information")
+                                    {
+                                        Property? prop = null;
+                                        try
+                                        {
+                                            prop = propSet[entry.Key];
+                                        }
+                                        catch
+                                        {
+                                            // Property doesn't exist in this set, try next set
+                                            continue;
+                                        }
+
+                                        if (prop != null)
+                                        {
+                                            prop.Value = entry.Value;
+                                            Console.WriteLine($"✅ Updated {entry.Key} = {entry.Value} in {propSet.Name}");
+                                            propertyUpdated = true;
+                                            break;
+                                        }
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
-                                    Console.WriteLine($"Warning: Could not update property {entry.Key} in {setName}: {ex.Message}");
+                                    Console.WriteLine($"Warning: Could not update property {entry.Key} in {propSet.Name}: {ex.Message}");
                                 }
                             }
 
@@ -491,24 +520,27 @@ namespace InventorApp.API.Services
                             }
                         }
 
-                        // Update Part Number
-                        try
+                        // Update Part Number if partPrefix is provided
+                        if (!string.IsNullOrEmpty(partPrefix))
                         {
-                            PropertySet designTrackingProps = propSets["Design Tracking Properties"];
-                            Property partNumberProp = designTrackingProps["Part Number"];
-                            string existingPartNumber = partNumberProp.Value?.ToString() ?? "";
+                            try
+                            {
+                                PropertySet designTrackingProps = propSets["Design Tracking Properties"];
+                                Property partNumberProp = designTrackingProps["Part Number"];
+                                string existingPartNumber = partNumberProp.Value?.ToString() ?? "";
 
-                            string newPartNumber = existingPartNumber.Contains("_")
-                                ? $"{partPrefix}_{existingPartNumber[(existingPartNumber.IndexOf('_') + 1)..]}"
-                                : $"{partPrefix}_{existingPartNumber}";
+                                string newPartNumber = existingPartNumber.Contains("_")
+                                    ? $"{partPrefix}_{existingPartNumber[(existingPartNumber.IndexOf('_') + 1)..]}"
+                                    : $"{partPrefix}_{existingPartNumber}";
 
-                            partNumberProp.Value = newPartNumber;
-                            Console.WriteLine($"✅ Updated: Part Number = {newPartNumber}");
-                        }
-                        catch (Exception e)
-                        {
-                            Console.WriteLine($"❌ Failed to update Part Number: {e.Message}");
-                            fileUpdated = false;
+                                partNumberProp.Value = newPartNumber;
+                                Console.WriteLine($"✅ Updated: Part Number = {newPartNumber}");
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine($"❌ Failed to update Part Number: {e.Message}");
+                                fileUpdated = false;
+                            }
                         }
 
                         // Update and save
@@ -523,16 +555,23 @@ namespace InventorApp.API.Services
                             {
                                 try
                                 {
-                                    // Update mass properties
-                                    MassProperties massProps = partDoc.ComponentDefinition.MassProperties;
-                                    massProps.Accuracy = 0; // Set to high accuracy
-                                    // Force mass properties update by accessing properties
-                                    double mass = massProps.Mass;
-                                    double volume = massProps.Volume;
-                                    double area = massProps.Area;
+                                    if (partDoc.ComponentDefinition.SurfaceBodies.Count == 0)
+                                    {
+                                        Console.WriteLine($"Skipping mass properties update for {filePath}: No solid bodies.");
+                                    }
+                                    else
+                                    {
+                                        // Update mass properties
+                                        MassProperties massProps = partDoc.ComponentDefinition.MassProperties;
+                                        massProps.Accuracy = 0; // Set to high accuracy
+                                        // Force mass properties update by accessing properties
+                                        double mass = massProps.Mass;
+                                        double volume = massProps.Volume;
+                                        double area = massProps.Area;
 
-                                    partDoc.Rebuild();
-                                    Console.WriteLine($"🔄 Mass properties updated and rebuild completed for part: {filePath}");
+                                        partDoc.Rebuild();
+                                        Console.WriteLine($"🔄 Mass properties updated and rebuild completed for part: {filePath}");
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
@@ -560,108 +599,7 @@ namespace InventorApp.API.Services
                                 }
                             }
 
-                            if (filePath.EndsWith(".iam", StringComparison.OrdinalIgnoreCase))
-                            {
-                                try
-                                {
-                                    AssemblyDocument asmDoc = (AssemblyDocument)inventorDoc;
-                                    // Update all components in the assembly
-                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
-                                    {
-                                        try
-                                        {
-                                            Document compDoc = (Document)occ.Definition.Document;
-
-                                            // Update component's mass properties
-                                            if (compDoc is PartDocument compPartDoc)
-                                            {
-                                                try
-                                                {
-                                                    MassProperties compMassProps = compPartDoc.ComponentDefinition.MassProperties;
-                                                    compMassProps.Accuracy = 0;
-                                                    // Force mass properties update by accessing properties
-                                                    double mass = compMassProps.Mass;
-                                                    double volume = compMassProps.Volume;
-                                                    double area = compMassProps.Area;
-                                                }
-                                                catch (Exception ex)
-                                                {
-                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
-                                                }
-                                            }
-                                            else if (compDoc is AssemblyDocument compAsmDoc)
-                                            {
-                                                try
-                                                {
-                                                    MassProperties compMassProps = compAsmDoc.ComponentDefinition.MassProperties;
-                                                    compMassProps.Accuracy = 0;
-                                                    // Force mass properties update by accessing properties
-                                                    double mass = compMassProps.Mass;
-                                                    double volume = compMassProps.Volume;
-                                                    double area = compMassProps.Area;
-                                                }
-                                                catch (Exception ex)
-                                                {
-                                                    Console.WriteLine($"Warning: Could not update mass properties for component {occ.Name}: {ex.Message}");
-                                                }
-                                            }
-
-                                            compDoc.Rebuild();
-
-                                            // Update iProperties for the component
-                                            foreach (PropertySet propSet in compDoc.PropertySets)
-                                            {
-                                                foreach (var entry in iProperties)
-                                                {
-                                                    try
-                                                    {
-                                                        if (entry.Key == "partPrefix") continue;
-                                                        Property? prop = null;
-
-                                                        // Try to find the property in different property sets
-                                                        string[] compPropertySets = {
-                                                            "Design Tracking Properties",
-                                                            "Summary Information",
-                                                            "Project Information"
-                                                        };
-
-                                                        foreach (string setName in compPropertySets)
-                                                        {
-                                                            try
-                                                            {
-                                                                prop = propSet[entry.Key];
-                                                                if (prop != null)
-                                                                {
-                                                                    prop.Value = entry.Value;
-                                                                    Console.WriteLine($"✅ Updated {entry.Key} for component {occ.Name}");
-                                                                    break;
-                                                                }
-                                                            }
-                                                            catch { }
-                                                        }
-                                                    }
-                                                    catch (Exception ex)
-                                                    {
-                                                        Console.WriteLine($"Warning: Could not update property {entry.Key} for component {occ.Name}: {ex.Message}");
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine($"Warning: Could not update component {occ.Name}: {e.Message}");
-                                        }
-                                    }
-                                    Console.WriteLine($"🔄 Assembly components updated: {filePath}");
-                                }
-                                catch (Exception e)
-                                {
-                                    Console.WriteLine($"❌ Failed to update assembly: {e.Message}");
-                                    fileUpdated = false;
-                                }
-                            }
-
-                            _inventorApp.ActiveView.Update();
+                            inventorApp.ActiveView.Update();
                             inventorDoc.Save2(true);
                             Console.WriteLine($"💾 Save triggered for: {filePath}");
                         }
@@ -701,7 +639,7 @@ namespace InventorApp.API.Services
                 // Log failed files
                 if (failedFiles.Any())
                 {
-                    Console.WriteLine("\n⚠️ The following files were NOT updated:");
+                    Console.WriteLine($"\n⚠️ {failedFiles.Count} files were NOT updated:");
                     foreach (string failedFile in failedFiles)
                     {
                         Console.WriteLine($" - {failedFile}");
@@ -715,6 +653,43 @@ namespace InventorApp.API.Services
                 Console.Error.WriteLine($"Error updating properties: {e.Message}");
                 return false;
             }
+            finally
+            {
+                // Cleanup Inventor and COM objects
+                try
+                {
+                    if (_inventorApp != null)
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                            }
+                        }
+
+                        // Quit Inventor and release COM object
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+
+                        // Force garbage collection to ensure COM objects are released
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                }
+            }
         }
 
         internal bool UpdateIpartsAndIassemblies(List<AssemblyUpdate> assemblyUpdates)
@@ -722,6 +697,7 @@ namespace InventorApp.API.Services
             try
             {
                 var inventorApp = GetInventorApplication();
+                inventorApp.SilentOperation = true; // Suppress dialogs
 
                 foreach (var update in assemblyUpdates)
                 {
@@ -935,7 +911,7 @@ namespace InventorApp.API.Services
                         {
                             assemblyDoc.Update();
                             inventorApp.ActiveView.Update();
-                            assemblyDoc.Save();
+                            assemblyDoc.Save2(true); // Save with Yes to All, suppress dialogs
                         }
                         catch (Exception e)
                         {
@@ -948,7 +924,7 @@ namespace InventorApp.API.Services
                         {
                             try
                             {
-                                assemblyDoc.Close();
+                                assemblyDoc.Close(true); // Close and save
                                 Marshal.ReleaseComObject(assemblyDoc);
                             }
                             catch (Exception e)
@@ -968,39 +944,43 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                // Cleanup Inventor and COM objects
-                try
+                if (_inventorApp != null)
                 {
-                    if (_inventorApp != null)
+                    _inventorApp.SilentOperation = false; // Reset after operation
+                    // Cleanup Inventor and COM objects
+                    try
                     {
-                        // Close all remaining documents
-                        while (_inventorApp.Documents.Count > 0)
+                        if (_inventorApp != null)
                         {
-                            try
+                            // Close all remaining documents
+                            while (_inventorApp.Documents.Count > 0)
                             {
-                                Document doc = _inventorApp.Documents[1];
-                                doc.Close(true);
-                                Marshal.ReleaseComObject(doc);
+                                try
+                                {
+                                    Document doc = _inventorApp.Documents[1];
+                                    doc.Close(true);
+                                    Marshal.ReleaseComObject(doc);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                                }
                             }
-                            catch (Exception ex)
-                            {
-                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
-                            }
+
+                            // Quit Inventor and release COM object
+                            _inventorApp.Quit();
+                            Marshal.ReleaseComObject(_inventorApp);
+                            _inventorApp = null;
+
+                            // Force garbage collection to ensure COM objects are released
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
                         }
-
-                        // Quit Inventor and release COM object
-                        _inventorApp.Quit();
-                        Marshal.ReleaseComObject(_inventorApp);
-                        _inventorApp = null;
-
-                        // Force garbage collection to ensure COM objects are released
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                    }
                 }
             }
         }
@@ -1321,6 +1301,205 @@ namespace InventorApp.API.Services
                 {
                     Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
                 }
+            }
+        }
+        public bool DesignAssistRename(string drawingsPath, List<string> assemblyList, string partPrefix)
+        {
+            var warnings = new List<string>();
+            try
+            {
+                var inventorApp = GetInventorApplication();
+                inventorApp.Visible = false;
+                inventorApp.SilentOperation = true;
+
+                foreach (var mainAssembly in assemblyList)
+                {
+                    string mainAssemblyPath = System.IO.Path.Combine(drawingsPath, mainAssembly);
+                    if (!System.IO.File.Exists(mainAssemblyPath))
+                    {
+                        warnings.Add($"Main assembly file not found: {mainAssemblyPath}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"Processing main assembly: {mainAssemblyPath}");
+                    AssemblyDocument? asmDoc = null;
+                    try
+                    {
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true);
+                        var occurrences = asmDoc.ComponentDefinition.Occurrences;
+                        var renameMap = new Dictionary<string, string>();
+
+                        // Find referenced files to rename
+                        foreach (ComponentOccurrence occ in occurrences)
+                        {
+                            try
+                            {
+                                string refPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
+                                string partNumber = GetPartNumberFromFile(refPath);
+                                if (string.IsNullOrEmpty(partNumber)) continue;
+
+                                // Only process files with the specified prefix
+                                if (!string.IsNullOrEmpty(partPrefix) && !partNumber.Contains(partPrefix, StringComparison.OrdinalIgnoreCase))
+                                    continue;
+
+                                string ext = System.IO.Path.GetExtension(refPath);
+                                string dir = System.IO.Path.GetDirectoryName(refPath)!;
+                                string newName = !string.IsNullOrEmpty(partPrefix) && partNumber.Contains("_")
+                                    ? $"{partPrefix}_{partNumber.Substring(partNumber.IndexOf('_') + 1)}"
+                                    : (!string.IsNullOrEmpty(partPrefix) ? $"{partPrefix}_{partNumber}" : partNumber);
+                                string newPath = System.IO.Path.Combine(dir, newName + ext);
+
+                                if (!System.IO.File.Exists(newPath) && !renameMap.ContainsKey(refPath))
+                                {
+                                    renameMap.Add(refPath, newPath);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                warnings.Add($"Warning: Could not process occurrence: {ex.Message}");
+                            }
+                        }
+
+                        // Update references and rename files
+                        foreach (var kvp in renameMap)
+                        {
+                            string oldPath = kvp.Key;
+                            string newPath = kvp.Value;
+                            try
+                            {
+                                // Update all occurrences referencing this file
+                                foreach (ComponentOccurrence occ in occurrences)
+                                {
+                                    if (occ.ReferencedDocumentDescriptor.FullDocumentName.Equals(oldPath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        occ.Replace(newPath, false);
+                                        Console.WriteLine($"Updated reference in assembly: {oldPath} -> {newPath}");
+                                    }
+                                }
+                                System.IO.File.Move(oldPath, newPath);
+                                Console.WriteLine($"Renamed file: {oldPath} -> {newPath}");
+                            }
+                            catch (Exception ex)
+                            {
+                                warnings.Add($"Failed to update/rename {oldPath}: {ex.Message}");
+                            }
+                        }
+
+                        asmDoc.Update();
+                        inventorApp.ActiveView.Update();
+                        asmDoc.Save();
+                        Console.WriteLine($"Saved assembly: {mainAssemblyPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"Error processing assembly {mainAssemblyPath}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (asmDoc != null)
+                        {
+                            try { asmDoc.Close(); Marshal.ReleaseComObject(asmDoc); } catch { }
+                        }
+                    }
+
+                    // Optionally rename the main assembly file
+                    string mainPartNumber = GetPartNumberFromFile(mainAssemblyPath);
+                    if (!string.IsNullOrEmpty(partPrefix) && mainPartNumber.Contains(partPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string newMainName = !string.IsNullOrEmpty(partPrefix) && mainPartNumber.Contains("_")
+                            ? $"{partPrefix}_{mainPartNumber.Substring(mainPartNumber.IndexOf('_') + 1)}"
+                            : (!string.IsNullOrEmpty(partPrefix) ? $"{partPrefix}_{mainPartNumber}" : mainPartNumber);
+                        string mainExt = System.IO.Path.GetExtension(mainAssemblyPath);
+                        string mainNewPath = System.IO.Path.Combine(drawingsPath, newMainName + mainExt);
+                        if (!System.IO.File.Exists(mainNewPath))
+                        {
+                            try
+                            {
+                                System.IO.File.Move(mainAssemblyPath, mainNewPath);
+                                Console.WriteLine($"Renamed main assembly: {mainAssemblyPath} -> {mainNewPath}");
+                            }
+                            catch (Exception ex)
+                            {
+                                warnings.Add($"Failed to rename main assembly: {ex.Message}");
+                            }
+                        }
+                        else
+                        {
+                            warnings.Add($"Target main assembly file already exists: {mainNewPath}");
+                        }
+                    }
+                }
+
+                if (warnings.Count > 0)
+                {
+                    foreach (var w in warnings)
+                        Console.WriteLine(w);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Inventor API error: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                if (_inventorApp != null)
+                {
+                    try
+                    {
+                        // Close all remaining documents
+                        while (_inventorApp.Documents.Count > 0)
+                        {
+                            try
+                            {
+                                Document doc = _inventorApp.Documents[1];
+                                doc.Close(true);
+                                Marshal.ReleaseComObject(doc);
+                            }
+                            catch { }
+                        }
+                        _inventorApp.Quit();
+                        Marshal.ReleaseComObject(_inventorApp);
+                        _inventorApp = null;
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        // Helper method to get the Part Number property from a file
+        private string GetPartNumberFromFile(string filePath)
+        {
+            try
+            {
+                Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
+                if (inventorType == null)
+                    throw new Exception("Inventor is not installed.");
+                dynamic? inventorApp = Activator.CreateInstance(inventorType);
+#pragma warning disable CS8602 // Dereference of a possibly null reference.
+                inventorApp.Visible = false;
+#pragma warning restore CS8602 // Dereference of a possibly null reference.
+                dynamic doc = inventorApp.Documents.Open(filePath, true);
+                string partNumber = "";
+                try
+                {
+                    var propSets = doc.PropertySets;
+                    var designProps = propSets["Design Tracking Properties"];
+                    partNumber = designProps["Part Number"].Value.ToString();
+                }
+                finally
+                {
+                    doc.Close();
+                    inventorApp.Quit();
+                }
+                return partNumber ?? "";
+            }
+            catch
+            {
+                return "";
             }
         }
     }

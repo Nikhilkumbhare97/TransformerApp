@@ -111,6 +111,18 @@ namespace InventorAPI.Controllers
                 ? Ok(new { message = "Model states and representations updated successfully." })
                 : StatusCode(500, "Failed to update model states and representations.");
         }
+
+        [HttpPost("design-assist-rename")]
+        public IActionResult DesignAssistRename([FromBody] DesignAssistRenameRequest request)
+        {
+            if (string.IsNullOrEmpty(request.DrawingsPath) || request.AssemblyList == null || request.AssemblyList.Count == 0)
+                return BadRequest("drawingspath and assemblyList are required.");
+
+            bool result = _assemblyService.DesignAssistRename(request.DrawingsPath, request.AssemblyList, request.PartPrefix);
+            return result
+                ? Ok(new { message = "Design Assistant renaming completed successfully." })
+                : StatusCode(500, "Failed to complete Design Assistant renaming.");
+        }
     }
 
     public class AssemblyRequest { public string AssemblyPath { get; set; } = "C:\\path\\to\\your\\assembly.iam"; }
@@ -141,5 +153,17 @@ namespace InventorAPI.Controllers
     {
         [JsonPropertyName("assemblyUpdates")]
         public List<ModelStateUpdate> AssemblyUpdates { get; set; } = new();
+    }
+
+    public class DesignAssistRenameRequest
+    {
+        [JsonPropertyName("drawingspath")]
+        public string DrawingsPath { get; set; } = "";
+
+        [JsonPropertyName("assemblyList")]
+        public List<string> AssemblyList { get; set; } = new();
+
+        [JsonPropertyName("partPrefix")]
+        public string PartPrefix { get; set; } = "";
     }
 }
