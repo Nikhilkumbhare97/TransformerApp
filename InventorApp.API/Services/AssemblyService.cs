@@ -101,7 +101,9 @@ namespace InventorApp.API.Services
             try
             {
                 var inventorApp = GetInventorApplication();
-                partDoc = inventorApp.Documents.Open(partFilePath);
+                inventorApp.SilentOperation = true; // Suppress dialogs
+
+                partDoc = inventorApp.Documents.Open(partFilePath, true); // Open with full access
                 PartDocument part = (PartDocument)partDoc;
                 Parameters paramList = part.ComponentDefinition.Parameters;
 
@@ -145,7 +147,7 @@ namespace InventorApp.API.Services
                     }
                 }
 
-                partDoc.Save();
+                partDoc.Save2(true); // Save with Yes to All, suppress dialogs
                 Console.WriteLine($"Parameters updated successfully in {partFilePath}");
             }
             catch (Exception e)
@@ -155,12 +157,16 @@ namespace InventorApp.API.Services
             }
             finally
             {
+                if (_inventorApp != null)
+                {
+                    _inventorApp.SilentOperation = false; // Reset after operation
+                }
                 // Cleanup Inventor and COM objects
                 try
                 {
                     if (partDoc != null)
                     {
-                        partDoc.Close();
+                        partDoc.Close(true); // Close and save
                         Marshal.ReleaseComObject(partDoc);
                     }
 
@@ -1126,6 +1132,7 @@ namespace InventorApp.API.Services
             try
             {
                 var inventorApp = GetInventorApplication();
+                inventorApp.SilentOperation = true; // Suppress dialogs
 
                 foreach (var update in updates)
                 {
@@ -1140,7 +1147,7 @@ namespace InventorApp.API.Services
                     Document? doc = null;
                     try
                     {
-                        doc = inventorApp.Documents.Open(assemblyFilePath);
+                        doc = inventorApp.Documents.Open(assemblyFilePath, true); // Open with full access
 
                         if (doc is AssemblyDocument asmDoc)
                         {
@@ -1234,7 +1241,7 @@ namespace InventorApp.API.Services
 
                             // Make sure to update the view and save
                             inventorApp.ActiveView.Update();
-                            asmDoc.Save();
+                            asmDoc.Save2(true); // Save with Yes to All, suppress dialogs
                         }
                         else
                         {
@@ -1247,7 +1254,7 @@ namespace InventorApp.API.Services
                         {
                             try
                             {
-                                doc.Close(true);
+                                doc.Close(true); // Close and save
                                 Marshal.ReleaseComObject(doc);
                             }
                             catch (Exception e)
@@ -1267,50 +1274,55 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                // Cleanup Inventor and COM objects
-                try
+                if (_inventorApp != null)
                 {
-                    if (_inventorApp != null)
+                    _inventorApp.SilentOperation = false; // Reset after operation
+                    // Cleanup Inventor and COM objects
+                    try
                     {
-                        // Close all remaining documents
-                        while (_inventorApp.Documents.Count > 0)
+                        if (_inventorApp != null)
                         {
-                            try
+                            // Close all remaining documents
+                            while (_inventorApp.Documents.Count > 0)
                             {
-                                Document doc = _inventorApp.Documents[1];
-                                doc.Close(true);
-                                Marshal.ReleaseComObject(doc);
+                                try
+                                {
+                                    Document doc = _inventorApp.Documents[1];
+                                    doc.Close(true);
+                                    Marshal.ReleaseComObject(doc);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.Error.WriteLine($"Error closing document: {ex.Message}");
+                                }
                             }
-                            catch (Exception ex)
-                            {
-                                Console.Error.WriteLine($"Error closing document: {ex.Message}");
-                            }
+
+                            // Quit Inventor and release COM object
+                            _inventorApp.Quit();
+                            Marshal.ReleaseComObject(_inventorApp);
+                            _inventorApp = null;
+
+                            // Force garbage collection to ensure COM objects are released
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
                         }
-
-                        // Quit Inventor and release COM object
-                        _inventorApp.Quit();
-                        Marshal.ReleaseComObject(_inventorApp);
-                        _inventorApp = null;
-
-                        // Force garbage collection to ensure COM objects are released
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"Error during cleanup: {ex.Message}");
+                    }
                 }
             }
         }
         public bool DesignAssistRename(string drawingsPath, List<string> assemblyList, string partPrefix)
         {
             var warnings = new List<string>();
+
             try
             {
                 var inventorApp = GetInventorApplication();
-                inventorApp.Visible = false;
-                inventorApp.SilentOperation = true;
+                inventorApp.SilentOperation = true; // Suppress dialogs
+                inventorApp.Visible = false; // Hide Inventor window
 
                 foreach (var mainAssembly in assemblyList)
                 {
@@ -1323,13 +1335,13 @@ namespace InventorApp.API.Services
 
                     Console.WriteLine($"Processing main assembly: {mainAssemblyPath}");
                     AssemblyDocument? asmDoc = null;
+
                     try
                     {
-                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true);
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true); // Open with full access
                         var occurrences = asmDoc.ComponentDefinition.Occurrences;
-                        var renameMap = new Dictionary<string, string>();
+                        var renameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                        // Find referenced files to rename
                         foreach (ComponentOccurrence occ in occurrences)
                         {
                             try
@@ -1338,15 +1350,16 @@ namespace InventorApp.API.Services
                                 string partNumber = GetPartNumberFromFile(refPath);
                                 if (string.IsNullOrEmpty(partNumber)) continue;
 
-                                // Only process files with the specified prefix
-                                if (!string.IsNullOrEmpty(partPrefix) && !partNumber.Contains(partPrefix, StringComparison.OrdinalIgnoreCase))
+                                // Only rename files whose part number already starts with the provided prefix
+                                if (!partNumber.StartsWith(partPrefix, StringComparison.OrdinalIgnoreCase))
                                     continue;
 
                                 string ext = System.IO.Path.GetExtension(refPath);
                                 string dir = System.IO.Path.GetDirectoryName(refPath)!;
-                                string newName = !string.IsNullOrEmpty(partPrefix) && partNumber.Contains("_")
-                                    ? $"{partPrefix}_{partNumber.Substring(partNumber.IndexOf('_') + 1)}"
-                                    : (!string.IsNullOrEmpty(partPrefix) ? $"{partPrefix}_{partNumber}" : partNumber);
+
+                                // Remove old prefix if present and add the new one
+                                string suffix = partNumber.Substring(partPrefix.Length).TrimStart('_');
+                                string newName = $"{partPrefix}_{suffix}";
                                 string newPath = System.IO.Path.Combine(dir, newName + ext);
 
                                 if (!System.IO.File.Exists(newPath) && !renameMap.ContainsKey(refPath))
@@ -1360,34 +1373,34 @@ namespace InventorApp.API.Services
                             }
                         }
 
-                        // Update references and rename files
                         foreach (var kvp in renameMap)
                         {
                             string oldPath = kvp.Key;
                             string newPath = kvp.Value;
+
                             try
                             {
-                                // Update all occurrences referencing this file
+                                System.IO.File.Move(oldPath, newPath);
+                                Console.WriteLine($"Renamed file: {oldPath} -> {newPath}");
+
                                 foreach (ComponentOccurrence occ in occurrences)
                                 {
                                     if (occ.ReferencedDocumentDescriptor.FullDocumentName.Equals(oldPath, StringComparison.OrdinalIgnoreCase))
                                     {
                                         occ.Replace(newPath, false);
-                                        Console.WriteLine($"Updated reference in assembly: {oldPath} -> {newPath}");
+                                        Console.WriteLine($"Updated reference: {oldPath} -> {newPath}");
                                     }
                                 }
-                                System.IO.File.Move(oldPath, newPath);
-                                Console.WriteLine($"Renamed file: {oldPath} -> {newPath}");
                             }
                             catch (Exception ex)
                             {
-                                warnings.Add($"Failed to update/rename {oldPath}: {ex.Message}");
+                                warnings.Add($"Failed to rename/update {oldPath}: {ex.Message}");
                             }
                         }
 
                         asmDoc.Update();
                         inventorApp.ActiveView.Update();
-                        asmDoc.Save();
+                        asmDoc.Save2(true); // Save with Yes to All, suppress dialogs
                         Console.WriteLine($"Saved assembly: {mainAssemblyPath}");
                     }
                     catch (Exception ex)
@@ -1398,19 +1411,29 @@ namespace InventorApp.API.Services
                     {
                         if (asmDoc != null)
                         {
-                            try { asmDoc.Close(); Marshal.ReleaseComObject(asmDoc); } catch { }
+                            try
+                            {
+                                asmDoc.Close(true);
+                                Marshal.ReleaseComObject(asmDoc);
+                                asmDoc = null;
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error closing assembly document: {ex.Message}");
+                            }
                         }
                     }
 
-                    // Optionally rename the main assembly file
+                    // Optionally rename the main assembly file itself
                     string mainPartNumber = GetPartNumberFromFile(mainAssemblyPath);
-                    if (!string.IsNullOrEmpty(partPrefix) && mainPartNumber.Contains(partPrefix, StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(mainPartNumber) &&
+                        mainPartNumber.StartsWith(partPrefix, StringComparison.OrdinalIgnoreCase))
                     {
-                        string newMainName = !string.IsNullOrEmpty(partPrefix) && mainPartNumber.Contains("_")
-                            ? $"{partPrefix}_{mainPartNumber.Substring(mainPartNumber.IndexOf('_') + 1)}"
-                            : (!string.IsNullOrEmpty(partPrefix) ? $"{partPrefix}_{mainPartNumber}" : mainPartNumber);
+                        string suffix = mainPartNumber.Substring(partPrefix.Length).TrimStart('_');
+                        string newMainName = $"{partPrefix}_{suffix}";
                         string mainExt = System.IO.Path.GetExtension(mainAssemblyPath);
                         string mainNewPath = System.IO.Path.Combine(drawingsPath, newMainName + mainExt);
+
                         if (!System.IO.File.Exists(mainNewPath))
                         {
                             try
@@ -1435,6 +1458,7 @@ namespace InventorApp.API.Services
                     foreach (var w in warnings)
                         Console.WriteLine(w);
                 }
+
                 return true;
             }
             catch (Exception ex)
@@ -1446,26 +1470,35 @@ namespace InventorApp.API.Services
             {
                 if (_inventorApp != null)
                 {
+                    _inventorApp.SilentOperation = false; // Reset after operation
+
+                    // Close all remaining documents
+                    while (_inventorApp.Documents.Count > 0)
+                    {
+                        try
+                        {
+                            Document doc = _inventorApp.Documents[1];
+                            doc.Close(true);
+                            Marshal.ReleaseComObject(doc);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error closing document: {ex.Message}");
+                        }
+                    }
+
                     try
                     {
-                        // Close all remaining documents
-                        while (_inventorApp.Documents.Count > 0)
-                        {
-                            try
-                            {
-                                Document doc = _inventorApp.Documents[1];
-                                doc.Close(true);
-                                Marshal.ReleaseComObject(doc);
-                            }
-                            catch { }
-                        }
                         _inventorApp.Quit();
                         Marshal.ReleaseComObject(_inventorApp);
                         _inventorApp = null;
                         GC.Collect();
                         GC.WaitForPendingFinalizers();
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error during Inventor cleanup: {ex.Message}");
+                    }
                 }
             }
         }
