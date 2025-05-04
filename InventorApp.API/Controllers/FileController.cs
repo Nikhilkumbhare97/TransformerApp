@@ -76,17 +76,17 @@ namespace InventorApp.API.Controllers
 
             if (!Directory.Exists(oldPath))
             {
-                return BadRequest("Folder to rename does not exist.");
+                return BadRequest(new { message = "Folder to rename does not exist." });
             }
 
             try
             {
                 Directory.Move(oldPath, newPath);
-                return Ok($"Folder renamed successfully from {oldFolderName} to {newFolderName}");
+                return Ok(new { message = $"Folder renamed successfully from {oldFolderName} to {newFolderName}" });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Error renaming folder: {ex.Message}");
+                return StatusCode(500, new { message = $"Error renaming folder: {ex.Message}" });
             }
         }
     }
