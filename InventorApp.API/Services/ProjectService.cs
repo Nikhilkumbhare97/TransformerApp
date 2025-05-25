@@ -22,6 +22,12 @@ namespace InventorApp.API.Services
             {
                 project.Status = "Active";
             }
+
+            if (project.Date.Kind == DateTimeKind.Unspecified)
+            {
+                project.Date = DateTime.SpecifyKind(project.Date, DateTimeKind.Utc);
+            }
+
             return await _projectRepository.CreateAsync(project);
         }
 
@@ -38,7 +44,7 @@ namespace InventorApp.API.Services
                 throw new Exception($"Project not found with id: {projectUniqueId}");
             }
 
-            // Update only non-null fields
+            // Update only non-null/valid fields
             if (!string.IsNullOrEmpty(partialProject.ProjectName))
                 existingProject.ProjectName = partialProject.ProjectName;
             if (!string.IsNullOrEmpty(partialProject.ProjectNumber))
@@ -53,8 +59,19 @@ namespace InventorApp.API.Services
                 existingProject.PreparedBy = partialProject.PreparedBy;
             if (!string.IsNullOrEmpty(partialProject.CheckedBy))
                 existingProject.CheckedBy = partialProject.CheckedBy;
+
             if (partialProject.Date != DateTime.MinValue)
-                existingProject.Date = partialProject.Date;
+            {
+                // Fix DateTime.Kind to Utc to avoid Npgsql exception
+                if (partialProject.Date.Kind == DateTimeKind.Unspecified)
+                {
+                    existingProject.Date = DateTime.SpecifyKind(partialProject.Date, DateTimeKind.Utc);
+                }
+                else
+                {
+                    existingProject.Date = partialProject.Date;
+                }
+            }
 
             return await _projectRepository.UpdateAsync(existingProject);
         }
