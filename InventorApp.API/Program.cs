@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Localization;
 using System.Globalization;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -53,11 +54,31 @@ builder.Services.AddScoped<IImageConfigRepository, ImageConfigRepository>();
 builder.Services.AddSingleton<AssemblyService>();
 
 // Add DbContext configuration
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseMySql(
-        builder.Configuration.GetConnectionString("DefaultConnection"),
-        ServerVersion.AutoDetect(builder.Configuration.GetConnectionString("DefaultConnection"))
-    ));
+builder.Services.AddDbContext<ApplicationDbContext>((serviceProvider, options) =>
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var dbType = configuration.GetValue<string>("Database:Type", "PostgreSQL"); // Default to PostgreSQL
+
+    if (dbType.Equals("PostgreSQL", StringComparison.OrdinalIgnoreCase))
+    {
+        options.UseNpgsql(
+            configuration.GetConnectionString("PostgresConnection"),
+            npgsqlOptions => npgsqlOptions.EnableRetryOnFailure()
+        );
+    }
+    else if (dbType.Equals("MySQL", StringComparison.OrdinalIgnoreCase))
+    {
+        options.UseMySql(
+            configuration.GetConnectionString("MySqlConnection"),
+            ServerVersion.AutoDetect(configuration.GetConnectionString("MySqlConnection")),
+            mySqlOptions => mySqlOptions.EnableRetryOnFailure()
+        );
+    }
+    else
+    {
+        throw new InvalidOperationException($"Unsupported database type: {dbType}");
+    }
+});
 
 var app = builder.Build();
 

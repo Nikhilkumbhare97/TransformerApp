@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using InventorApp.API.Models;
 using Microsoft.EntityFrameworkCore;
@@ -60,5 +61,10 @@ namespace InventorApp.API.Repositories
         {
             return await _context.Projects.Where(p => statuses.Contains(p.Status)).ToListAsync();
         }
+
+        public IQueryable<Project> Query() // New method
+        {
+            return _context.Projects;
+        }
     }
-} 
+}
