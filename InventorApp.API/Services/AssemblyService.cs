@@ -91,6 +91,8 @@ namespace InventorApp.API.Services
                     _inventorApp.Quit();
                     Marshal.ReleaseComObject(_inventorApp);
                     _inventorApp = null;
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
                 }
             }
         }
@@ -277,7 +279,7 @@ namespace InventorApp.API.Services
 
                 foreach (var action in suppressActions)
                 {
-                    string assemblyPath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", action.AssemblyFilePath);
+                    string assemblyPath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\ABC099001\\MODEL", action.AssemblyFilePath);
 
                     foreach (var component in action.Components)
                     {
@@ -707,7 +709,7 @@ namespace InventorApp.API.Services
 
                 foreach (var update in assemblyUpdates)
                 {
-                    string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", update.AssemblyFilePath);
+                    string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\ABC099001\\MODEL", update.AssemblyFilePath);
 
                     AssemblyDocument? assemblyDoc = null;
                     try
@@ -1136,7 +1138,7 @@ namespace InventorApp.API.Services
 
                 foreach (var update in updates)
                 {
-                    string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\PC0300949_01_01\\MODEL", update.AssemblyFilePath + ".iam");
+                    string assemblyFilePath = System.IO.Path.Combine("D:\\Project_task\\Projects\\TRANSFORMER\\WIP\\ABC099001\\MODEL", update.AssemblyFilePath + ".iam");
 
                     if (!System.IO.File.Exists(assemblyFilePath))
                     {
@@ -1537,3 +1539,4 @@ namespace InventorApp.API.Services
         }
     }
 }
+

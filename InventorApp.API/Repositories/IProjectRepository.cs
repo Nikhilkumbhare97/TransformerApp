@@ -13,5 +13,6 @@ namespace InventorApp.API.Repositories
         Task UpdateProjectStatusAsync(long projectUniqueId, string status);
         Task<bool> ExistsByProjectNumberAsync(string projectNumber);
         Task<IEnumerable<Project>> FindByStatusInAsync(IEnumerable<string> statuses);
+        IQueryable<Project> Query(); // New method
     }
-} 
+}

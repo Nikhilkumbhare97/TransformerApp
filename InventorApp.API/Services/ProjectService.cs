@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using InventorApp.API.Models;
 using InventorApp.API.Repositories;
+using Microsoft.EntityFrameworkCore;
 
 namespace InventorApp.API.Services
 {
@@ -77,5 +78,47 @@ namespace InventorApp.API.Services
         {
             return await _projectRepository.ExistsByProjectNumberAsync(projectNumber);
         }
+
+        public async Task<(IEnumerable<Project> Projects, int TotalCount)> GetPagedProjects(
+            int page, int pageSize, string search, string sortBy, string sortDirection, IEnumerable<string> status)
+        {
+            var query = _projectRepository.Query(); // Expose IQueryable from repository
+
+            // Filter by status
+            if (status != null && status.Any())
+                query = query.Where(p => status.Contains(p.Status));
+
+            // Search
+            if (!string.IsNullOrEmpty(search))
+            {
+                query = query.Where(p =>
+                    p.ProjectName.Contains(search) ||
+                    p.ProjectNumber.Contains(search) ||
+                    p.ProjectId.Contains(search) ||
+                    p.ClientName.Contains(search) ||
+                    p.Status.Contains(search)
+                );
+            }
+
+            // Sorting
+            if (!string.IsNullOrEmpty(sortBy))
+            {
+                bool desc = sortDirection?.ToLower() == "desc";
+                query = sortBy switch
+                {
+                    "projectName" => desc ? query.OrderByDescending(p => p.ProjectName) : query.OrderBy(p => p.ProjectName),
+                    "projectNumber" => desc ? query.OrderByDescending(p => p.ProjectNumber) : query.OrderBy(p => p.ProjectNumber),
+                    "projectId" => desc ? query.OrderByDescending(p => p.ProjectId) : query.OrderBy(p => p.ProjectId),
+                    "clientName" => desc ? query.OrderByDescending(p => p.ClientName) : query.OrderBy(p => p.ClientName),
+                    "status" => desc ? query.OrderByDescending(p => p.Status) : query.OrderBy(p => p.Status),
+                    _ => query.OrderBy(p => p.ProjectName)
+                };
+            }
+
+            int totalCount = await query.CountAsync();
+            var projects = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+            return (projects, totalCount);
+        }
     }
-} 
+}

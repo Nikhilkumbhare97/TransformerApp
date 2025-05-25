@@ -71,5 +71,20 @@ namespace InventorApp.API.Controllers
             var projects = await _projectService.GetAllProjectsByStatus(status);
             return Ok(projects);
         }
+
+        [HttpGet("paged")]
+        public async Task<ActionResult<object>> GetPagedProjects(
+    [FromQuery] int page = 1,
+    [FromQuery] int pageSize = 10,
+    [FromQuery] string search = "",
+    [FromQuery] string sortBy = "projectName",
+    [FromQuery] string sortDirection = "asc",
+    [FromQuery] List<string>? status = null)
+        {
+#pragma warning disable CS8604 // Possible null reference argument.
+            var (projects, totalCount) = await _projectService.GetPagedProjects(page, pageSize, search, sortBy, sortDirection, status);
+#pragma warning restore CS8604 // Possible null reference argument.
+            return Ok(new { projects, totalCount });
+        }
     }
 }

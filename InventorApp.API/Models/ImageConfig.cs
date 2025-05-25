@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace InventorApp.API.Models
 {
-    [Table("image_config")]
+    [Table("image_config", Schema = "transformer")]
     public class ImageConfig
     {
         [Key]

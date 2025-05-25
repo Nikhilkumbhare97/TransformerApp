@@ -4,7 +4,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace InventorApp.API.Models
 {
-    [Table("projects")]
+    [Table("projects", Schema = "transformer")]
     public class Project
     {
         [Key]

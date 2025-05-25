@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace InventorApp.API.Models
 {
-    [Table("transformer_configuration")]
+    [Table("transformer_configuration", Schema = "transformer")]
     public class TransformerConfiguration
     {
         [Key]
