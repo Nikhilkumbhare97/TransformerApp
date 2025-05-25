@@ -108,12 +108,14 @@ namespace InventorApp.API.Services
             // Search
             if (!string.IsNullOrEmpty(search))
             {
+                search = search.ToLower(); // normalize search text
+
                 query = query.Where(p =>
-                    p.ProjectName.Contains(search) ||
-                    p.ProjectNumber.Contains(search) ||
-                    p.ProjectId.Contains(search) ||
-                    p.ClientName.Contains(search) ||
-                    p.Status.Contains(search)
+                    p.ProjectName.ToLower().Contains(search) ||
+                    p.ProjectNumber.ToLower().Contains(search) ||
+                    p.ProjectId.ToLower().Contains(search) ||
+                    p.ClientName.ToLower().Contains(search) ||
+                    p.Status.ToLower().Contains(search)
                 );
             }
 
