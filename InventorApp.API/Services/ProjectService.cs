@@ -10,10 +10,17 @@ namespace InventorApp.API.Services
     public class ProjectService
     {
         private readonly IProjectRepository _projectRepository;
+        private readonly ITransformerConfigurationRepository _transformerConfigRepository;
+        private readonly ITransformerRepository _transformerRepository;
 
-        public ProjectService(IProjectRepository projectRepository)
+        public ProjectService(
+            IProjectRepository projectRepository,
+            ITransformerConfigurationRepository transformerConfigRepository,
+            ITransformerRepository transformerRepository)
         {
             _projectRepository = projectRepository;
+            _transformerConfigRepository = transformerConfigRepository;
+            _transformerRepository = transformerRepository;
         }
 
         public async Task<Project> CreateProject(Project project)
@@ -28,7 +35,46 @@ namespace InventorApp.API.Services
                 project.Date = DateTime.SpecifyKind(project.Date, DateTimeKind.Utc);
             }
 
-            return await _projectRepository.CreateAsync(project);
+            var createdProject = await _projectRepository.CreateAsync(project);
+
+            // Handle copying of transformer data if isCopied is true
+            if (project.IsCopied && project.CopiedUniqueId.HasValue)
+            {
+                // Copy transformer configuration
+                var sourceConfig = await _transformerConfigRepository.GetByIdAsync(project.CopiedUniqueId.Value);
+                if (sourceConfig != null)
+                {
+                    var newConfig = new TransformerConfiguration
+                    {
+                        ProjectUniqueId = createdProject.ProjectUniqueId,
+                        TankDetails = sourceConfig.TankDetails,
+                        LvTurretDetails = sourceConfig.LvTurretDetails,
+                        TopCoverDetails = sourceConfig.TopCoverDetails,
+                        HvTurretDetails = sourceConfig.HvTurretDetails,
+                        Piping = sourceConfig.Piping,
+                        LvTrunkingDetails = sourceConfig.LvTrunkingDetails,
+                        LvHvTurretDetails = sourceConfig.LvHvTurretDetails,
+                        ConservatorDetails = sourceConfig.ConservatorDetails,
+                        ConservatorSupportDetails = sourceConfig.ConservatorSupportDetails
+                    };
+                    await _transformerConfigRepository.CreateAsync(newConfig);
+                }
+
+                // Copy transformer details
+                var sourceTransformer = await _transformerRepository.GetByIdAsync(project.CopiedUniqueId.Value);
+                if (sourceTransformer != null)
+                {
+                    var newTransformer = new Transformer
+                    {
+                        ProjectUniqueId = createdProject.ProjectUniqueId,
+                        TransformerType = sourceTransformer.TransformerType,
+                        DesignType = sourceTransformer.DesignType
+                    };
+                    await _transformerRepository.CreateAsync(newTransformer);
+                }
+            }
+
+            return createdProject;
         }
 
         public async Task DeleteProject(long projectUniqueId)
