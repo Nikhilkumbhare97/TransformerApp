@@ -55,6 +55,12 @@ namespace InventorApp.API.Models
         [StringLength(20)]
         public string Status { get; set; }
 
+        [NotMapped]
+        public bool IsCopied { get; set; }
+
+        [NotMapped]
+        public long? CopiedUniqueId { get; set; }
+
         public Project()
         {
             ProjectId = string.Empty;
@@ -66,6 +72,8 @@ namespace InventorApp.API.Models
             CheckedBy = string.Empty;
             Status = "Active";
             Date = DateTime.Now;
+            IsCopied = false;
+            CopiedUniqueId = null;
         }
     }
 }
