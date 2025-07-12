@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using InventorApp.API.Services;
 using System.Text.Json.Serialization;
 using InventorApp.API.Models;
+using System.ComponentModel.DataAnnotations;
 
 namespace InventorAPI.Controllers
 {
@@ -115,13 +116,188 @@ namespace InventorAPI.Controllers
         [HttpPost("design-assist-rename")]
         public IActionResult DesignAssistRename([FromBody] DesignAssistRenameRequest request)
         {
-            if (string.IsNullOrEmpty(request.DrawingsPath) || request.AssemblyList == null || request.AssemblyList.Count == 0)
-                return BadRequest("drawingspath and assemblyList are required.");
+            // Enhanced validation with more specific error messages
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
 
-            bool result = _assemblyService.DesignAssistRename(request.DrawingsPath, request.AssemblyList, request.PartPrefix);
-            return result
-                ? Ok(new { message = "Design Assistant renaming completed successfully." })
-                : StatusCode(500, "Failed to complete Design Assistant renaming.");
+            if (string.IsNullOrWhiteSpace(request.PartPrefix))
+                return BadRequest(new { message = "partPrefix is required and cannot be empty or whitespace." });
+
+            // Validate path format
+            try
+            {
+                var fullPath = Path.GetFullPath(request.DrawingsPath);
+                if (!Directory.Exists(fullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Directory not found: {fullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = fullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    providedPath = request.DrawingsPath
+                });
+            }
+
+            try
+            {
+                // Log the operation start
+                Console.WriteLine($"=== Design Assistant Rename Operation Started ===");
+                Console.WriteLine($"Path: {request.DrawingsPath}");
+                Console.WriteLine($"Prefix: {request.PartPrefix}");
+                Console.WriteLine($"Assembly List Provided: {request.AssemblyList?.Count ?? 0} assemblies");
+
+                // Pass the assemblyList (can be null/empty for auto-discovery)
+                bool result = _assemblyService.DesignAssistRename(
+                    request.DrawingsPath,
+                    request.PartPrefix,
+                    request.AssemblyList?.Count > 0 ? request.AssemblyList : null
+                );
+
+                if (result)
+                {
+                    var response = new
+                    {
+                        message = "Design Assistant renaming completed successfully.",
+                        processedPath = request.DrawingsPath,
+                        prefix = request.PartPrefix,
+                        autoDiscovered = request.AssemblyList?.Count == 0,
+                        timestamp = DateTime.UtcNow,
+                        status = "success"
+                    };
+
+                    Console.WriteLine($"=== Design Assistant Rename Operation Completed Successfully ===");
+                    return Ok(response);
+                }
+                else
+                {
+                    var response = new
+                    {
+                        message = "Design Assistant renaming failed. Check the application logs for details.",
+                        processedPath = request.DrawingsPath,
+                        prefix = request.PartPrefix,
+                        autoDiscovered = request.AssemblyList?.Count == 0,
+                        timestamp = DateTime.UtcNow,
+                        status = "failed"
+                    };
+
+                    Console.WriteLine($"=== Design Assistant Rename Operation Failed ===");
+                    return StatusCode(500, response);
+                }
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                var response = new
+                {
+                    message = $"Access denied to directory: {ex.Message}",
+                    processedPath = request.DrawingsPath,
+                    prefix = request.PartPrefix,
+                    timestamp = DateTime.UtcNow,
+                    status = "access_denied"
+                };
+                return StatusCode(403, response);
+            }
+            catch (Exception ex)
+            {
+                var response = new
+                {
+                    message = $"An unexpected error occurred: {ex.Message}",
+                    processedPath = request.DrawingsPath,
+                    prefix = request.PartPrefix,
+                    timestamp = DateTime.UtcNow,
+                    status = "error",
+                    errorType = ex.GetType().Name
+                };
+                return StatusCode(500, response);
+            }
+        }
+
+        /// <summary>
+        /// Analyzes what files would be renamed without performing the actual rename operation
+        /// </summary>
+        [HttpPost("design-assist-analyze")]
+        public IActionResult DesignAssistAnalyze([FromBody] DesignAssistRenameRequest request)
+        {
+            // Enhanced validation with more specific error messages
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
+
+            if (string.IsNullOrWhiteSpace(request.PartPrefix))
+                return BadRequest(new { message = "partPrefix is required and cannot be empty or whitespace." });
+
+            // Validate path format
+            try
+            {
+                var fullPath = Path.GetFullPath(request.DrawingsPath);
+                if (!Directory.Exists(fullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Directory not found: {fullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = fullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    providedPath = request.DrawingsPath
+                });
+            }
+
+            try
+            {
+                // Analyze what would be renamed without actually doing it
+                var analysis = _assemblyService.AnalyzeDesignAssistRename(
+                    request.DrawingsPath,
+                    request.PartPrefix,
+                    request.AssemblyList?.Count > 0 ? request.AssemblyList : null
+                );
+
+                var response = new
+                {
+                    message = "Analysis completed successfully.",
+                    processedPath = request.DrawingsPath,
+                    prefix = request.PartPrefix,
+                    autoDiscovered = request.AssemblyList?.Count == 0,
+                    timestamp = DateTime.UtcNow,
+                    status = "analysis_complete",
+                    analysis = analysis
+                };
+
+                return Ok(response);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                var response = new
+                {
+                    message = $"Access denied to directory: {ex.Message}",
+                    processedPath = request.DrawingsPath,
+                    prefix = request.PartPrefix,
+                    timestamp = DateTime.UtcNow,
+                    status = "access_denied"
+                };
+                return StatusCode(403, response);
+            }
+            catch (Exception ex)
+            {
+                var response = new
+                {
+                    message = $"An unexpected error occurred: {ex.Message}",
+                    processedPath = request.DrawingsPath,
+                    prefix = request.PartPrefix,
+                    timestamp = DateTime.UtcNow,
+                    status = "error",
+                    errorType = ex.GetType().Name
+                };
+                return StatusCode(500, response);
+            }
         }
     }
 
@@ -157,13 +333,27 @@ namespace InventorAPI.Controllers
 
     public class DesignAssistRenameRequest
     {
+        /// <summary>
+        /// The directory path containing the CAD files to be renamed
+        /// </summary>
         [JsonPropertyName("drawingspath")]
+        [Required(ErrorMessage = "drawingsPath is required")]
+        [StringLength(500, MinimumLength = 1, ErrorMessage = "drawingsPath must be between 1 and 500 characters")]
         public string DrawingsPath { get; set; } = "";
 
+        /// <summary>
+        /// Optional list of specific assembly files to process. If null or empty, auto-discovery will be used.
+        /// </summary>
         [JsonPropertyName("assemblyList")]
-        public List<string> AssemblyList { get; set; } = new();
+        public List<string>? AssemblyList { get; set; } = null;
 
+        /// <summary>
+        /// The new prefix to apply to matching components
+        /// </summary>
         [JsonPropertyName("partPrefix")]
+        [Required(ErrorMessage = "partPrefix is required")]
+        [StringLength(50, MinimumLength = 1, ErrorMessage = "partPrefix must be between 1 and 50 characters")]
+        [RegularExpression(@"^[A-Za-z0-9_-]+$", ErrorMessage = "partPrefix can only contain letters, numbers, underscores, and hyphens")]
         public string PartPrefix { get; set; } = "";
     }
 }

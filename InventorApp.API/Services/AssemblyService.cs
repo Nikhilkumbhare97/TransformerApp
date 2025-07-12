@@ -1316,98 +1316,454 @@ namespace InventorApp.API.Services
                 }
             }
         }
-        public bool DesignAssistRename(string drawingsPath, List<string> assemblyList, string partPrefix)
+
+        public bool DesignAssistRename(string drawingsPath, string newPrefix, List<string>? assemblyList = null)
         {
             var warnings = new List<string>();
+            var processedAssemblies = new List<AssemblyDocument>();
 
             try
             {
                 var inventorApp = GetInventorApplication();
-                inventorApp.SilentOperation = true; // Suppress dialogs
-                inventorApp.Visible = false; // Hide Inventor window
+                inventorApp.SilentOperation = true;
+                inventorApp.Visible = false;
 
-                foreach (var mainAssembly in assemblyList)
+                // Auto-discover assembly files if no list provided
+                List<string> assemblies;
+                if (assemblyList == null || assemblyList.Count == 0)
                 {
-                    string mainAssemblyPath = System.IO.Path.Combine(drawingsPath, mainAssembly);
+                    Console.WriteLine($"Auto-discovering assembly files in: {drawingsPath}");
+                    assemblies = DiscoverAssemblyFiles(drawingsPath);
+
+                    if (assemblies.Count == 0)
+                    {
+                        warnings.Add($"No assembly files found in path: {drawingsPath}");
+                        return false;
+                    }
+
+                    Console.WriteLine($"Found {assemblies.Count} assembly files to process:");
+                    assemblies.ForEach(a => Console.WriteLine($"  - {a}"));
+                }
+                else
+                {
+                    assemblies = assemblyList;
+                }
+
+                // Global rename tracking with conflict resolution
+                var globalRenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // Phase 1: Open all assemblies and build global rename map
+                foreach (var mainAssembly in assemblies)
+                {
+                    string mainAssemblyPath = System.IO.Path.IsPathRooted(mainAssembly)
+                        ? mainAssembly
+                        : System.IO.Path.Combine(drawingsPath, mainAssembly);
+
                     if (!System.IO.File.Exists(mainAssemblyPath))
                     {
                         warnings.Add($"Main assembly file not found: {mainAssemblyPath}");
                         continue;
                     }
 
-                    Console.WriteLine($"Processing main assembly: {mainAssemblyPath}");
+                    Console.WriteLine($"Opening assembly: {mainAssemblyPath}");
                     AssemblyDocument? asmDoc = null;
 
                     try
                     {
-                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true); // Open with full access
-                        var occurrences = asmDoc.ComponentDefinition.Occurrences;
-                        var renameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true);
+                        processedAssemblies.Add(asmDoc);
 
+                        var occurrences = asmDoc.ComponentDefinition.Occurrences;
+
+                        // Build rename map for this assembly
                         foreach (ComponentOccurrence occ in occurrences)
                         {
                             try
                             {
                                 string refPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
-                                string partNumber = GetPartNumberFromFile(refPath);
-                                if (string.IsNullOrEmpty(partNumber)) continue;
+                                string fileName = System.IO.Path.GetFileNameWithoutExtension(refPath);
 
-                                // Only rename files whose part number already starts with the provided prefix
-                                if (!partNumber.StartsWith(partPrefix, StringComparison.OrdinalIgnoreCase))
+                                // *** KEY FIX 1: Skip Content Center files ***
+                                if (IsContentCenterFile(refPath))
+                                {
+                                    Console.WriteLine($"Skipping Content Center file: {fileName}");
+                                    continue;
+                                }
+
+                                // *** KEY FIX 2: Only rename files that match the part prefix pattern ***
+                                if (!ShouldRename(occ, newPrefix))
+                                {
+                                    Console.WriteLine($"Skipping file (doesn't match prefix pattern): {fileName}");
+                                    continue;
+                                }
+
+                                // Skip if already starts with new prefix
+                                if (fileName.StartsWith(newPrefix, StringComparison.OrdinalIgnoreCase))
                                     continue;
 
                                 string ext = System.IO.Path.GetExtension(refPath);
                                 string dir = System.IO.Path.GetDirectoryName(refPath)!;
 
-                                // Remove old prefix if present and add the new one
-                                string suffix = partNumber.Substring(partPrefix.Length).TrimStart('_');
-                                string newName = $"{partPrefix}_{suffix}";
-                                string newPath = System.IO.Path.Combine(dir, newName + ext);
+                                // Generate new name with conflict resolution
+                                string newFileName = GenerateUniqueFileName(fileName, newPrefix, ext, dir, usedNames);
+                                string newPath = System.IO.Path.Combine(dir, newFileName);
 
-                                if (!System.IO.File.Exists(newPath) && !renameMap.ContainsKey(refPath))
+                                if (!globalRenameMap.ContainsKey(refPath))
                                 {
-                                    renameMap.Add(refPath, newPath);
+                                    globalRenameMap.Add(refPath, newPath);
+                                    usedNames.Add(newFileName);
                                 }
                             }
                             catch (Exception ex)
                             {
-                                warnings.Add($"Warning: Could not process occurrence: {ex.Message}");
+                                warnings.Add($"Warning: Could not process occurrence in {mainAssemblyPath}: {ex.Message}");
                             }
                         }
 
-                        foreach (var kvp in renameMap)
+                        // Handle main assembly renaming
+                        string mainFileName = System.IO.Path.GetFileNameWithoutExtension(mainAssemblyPath);
+                        if (ShouldRenameAssembly(asmDoc, newPrefix) && !mainFileName.StartsWith(newPrefix, StringComparison.OrdinalIgnoreCase))
                         {
-                            string oldPath = kvp.Key;
-                            string newPath = kvp.Value;
+                            string mainExt = System.IO.Path.GetExtension(mainAssemblyPath);
+                            string newMainFileName = GenerateUniqueFileName(mainFileName, newPrefix, mainExt, drawingsPath, usedNames);
+                            string mainNewPath = System.IO.Path.Combine(drawingsPath, newMainFileName);
 
-                            try
+                            if (!globalRenameMap.ContainsKey(mainAssemblyPath))
                             {
-                                System.IO.File.Move(oldPath, newPath);
-                                Console.WriteLine($"Renamed file: {oldPath} -> {newPath}");
-
-                                foreach (ComponentOccurrence occ in occurrences)
-                                {
-                                    if (occ.ReferencedDocumentDescriptor.FullDocumentName.Equals(oldPath, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        occ.Replace(newPath, false);
-                                        Console.WriteLine($"Updated reference: {oldPath} -> {newPath}");
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                warnings.Add($"Failed to rename/update {oldPath}: {ex.Message}");
+                                globalRenameMap.Add(mainAssemblyPath, mainNewPath);
+                                usedNames.Add(newMainFileName);
                             }
                         }
-
-                        asmDoc.Update();
-                        inventorApp.ActiveView.Update();
-                        asmDoc.Save2(true); // Save with Yes to All, suppress dialogs
-                        Console.WriteLine($"Saved assembly: {mainAssemblyPath}");
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add($"Error processing assembly {mainAssemblyPath}: {ex.Message}");
+                        warnings.Add($"Error opening assembly {mainAssemblyPath}: {ex.Message}");
+                    }
+                }
+
+                Console.WriteLine($"Total files to rename: {globalRenameMap.Count}");
+
+                // Phase 2: Close all assemblies before renaming files
+                foreach (var asmDoc in processedAssemblies)
+                {
+                    try
+                    {
+                        Console.WriteLine($"Closing assembly: {asmDoc.FullFileName}");
+                        asmDoc.Close(false); // Don't save yet
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"Error closing assembly {asmDoc.FullFileName}: {ex.Message}");
+                    }
+                }
+                processedAssemblies.Clear();
+
+                // Force garbage collection to release COM objects
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+
+                // Wait a moment for file locks to be released
+                Thread.Sleep(5000);
+
+                // Phase 3: Perform file renaming
+                var successfulRenames = new Dictionary<string, string>();
+                foreach (var kvp in globalRenameMap)
+                {
+                    string oldPath = kvp.Key;
+                    string newPath = kvp.Value;
+
+                    try
+                    {
+                        if (System.IO.File.Exists(newPath))
+                        {
+                            warnings.Add($"Target file already exists, skipping: {newPath}");
+                            continue;
+                        }
+
+                        System.IO.File.Move(oldPath, newPath);
+                        successfulRenames.Add(oldPath, newPath);
+                        Console.WriteLine($"Renamed file: {System.IO.Path.GetFileName(oldPath)} -> {System.IO.Path.GetFileName(newPath)}");
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        warnings.Add($"File is locked, cannot rename: {oldPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"Failed to rename {oldPath}: {ex.Message}");
+                    }
+                }
+
+                // Phase 3.5: Update derived part links before assemblies
+                Console.WriteLine("=== Phase 3.5: Updating Derived Part Links ===");
+                var allIptFiles = Directory.GetFiles(drawingsPath, "*.ipt", SearchOption.AllDirectories);
+                foreach (var iptPath in allIptFiles)
+                {
+                    string currentPath = successfulRenames.ContainsKey(iptPath) ? successfulRenames[iptPath] : iptPath;
+                    if (!System.IO.File.Exists(currentPath))
+                        continue;
+                    PartDocument? partDoc = null;
+                    try
+                    {
+                        partDoc = (PartDocument)inventorApp.Documents.Open(currentPath, false);
+                        bool updated = false;
+                        var derivedList = partDoc.ComponentDefinition.ReferenceComponents.DerivedPartComponents.Cast<DerivedPartComponent>().ToList();
+                        foreach (DerivedPartComponent derived in derivedList)
+                        {
+                            string basePath = derived.ReferencedDocumentDescriptor.FullDocumentName;
+                            if (successfulRenames.ContainsKey(basePath))
+                            {
+                                string newBasePath = successfulRenames[basePath];
+
+                                // Check if new base file exists and is not locked
+                                if (!System.IO.File.Exists(newBasePath))
+                                {
+                                    Console.WriteLine($"New base file does not exist: {newBasePath}");
+                                    continue;
+                                }
+                                if (IsFileLocked(newBasePath))
+                                {
+                                    Console.WriteLine($"New base file is locked: {newBasePath}");
+                                    continue;
+                                }
+
+                                int retryCount = 0;
+                                bool recreated = false;
+                                while (retryCount < 3 && !recreated)
+                                {
+                                    try
+                                    {
+                                        if (derived.Definition is DerivedPartUniformScaleDef def)
+                                        {
+                                            var scale = def.ScaleFactor;
+                                            derived.Delete();
+                                            var newDefObj = partDoc.ComponentDefinition.ReferenceComponents.DerivedPartComponents.CreateDefinition(newBasePath);
+                                            if (newDefObj is DerivedPartUniformScaleDef newDef)
+                                            {
+                                                newDef.ScaleFactor = scale;
+                                                partDoc.ComponentDefinition.ReferenceComponents.DerivedPartComponents.Add((DerivedPartDefinition)newDef);
+                                                updated = true;
+                                                Console.WriteLine($"Recreated derived part link in {System.IO.Path.GetFileName(currentPath)}: {System.IO.Path.GetFileName(basePath)} -> {System.IO.Path.GetFileName(newBasePath)}");
+                                            }
+                                            else
+                                            {
+                                                Console.WriteLine($"Failed to create new derived part definition for {System.IO.Path.GetFileName(currentPath)}");
+                                            }
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine($"Unsupported derived part definition type ({derived.Definition.GetType().Name}) in {System.IO.Path.GetFileName(currentPath)}. Skipping.");
+                                            continue;
+                                        }
+                                        Console.WriteLine($"Derived feature type: {derived.Definition.GetType().FullName} in {System.IO.Path.GetFileName(currentPath)}");
+                                        recreated = true;
+                                    }
+                                    catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                    {
+                                        retryCount++;
+                                        if (retryCount < 3)
+                                        {
+                                            Console.WriteLine($"E_FAIL recreating derived part link in {System.IO.Path.GetFileName(currentPath)} (attempt {retryCount}/3), saving and reopening part, retrying...");
+                                            // Save and close, then reopen the part document
+                                            try
+                                            {
+                                                partDoc.Save();
+                                                partDoc.Close(false);
+                                                Marshal.ReleaseComObject(partDoc);
+                                                Thread.Sleep(500);
+                                                partDoc = (PartDocument)inventorApp.Documents.Open(currentPath, false);
+                                            }
+                                            catch (Exception reopenEx)
+                                            {
+                                                Console.WriteLine($"Error saving/reopening part document: {reopenEx.Message}");
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                        Console.WriteLine($"Failed to recreate derived part link in {System.IO.Path.GetFileName(currentPath)} after 3 attempts: {comEx.Message}");
+                                        break;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"Failed to recreate derived part link in {System.IO.Path.GetFileName(currentPath)}: {ex.Message}");
+                                        break;
+                                    }
+                                }
+                            }
+                            else if (derived.ReferencedDocumentDescriptor.ReferenceMissing)
+                            {
+                                Console.WriteLine($"Skipped unresolved derived feature in {System.IO.Path.GetFileName(currentPath)} (no new base path found)");
+                                continue;
+                            }
+                        }
+                        if (updated)
+                        {
+                            partDoc.Update();
+                            partDoc.Save();
+                            Console.WriteLine($"Saved derived part: {currentPath}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error processing derived part {currentPath}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (partDoc != null)
+                        {
+                            try
+                            {
+                                partDoc.Close(false);
+                                Marshal.ReleaseComObject(partDoc);
+                            }
+                            catch { }
+                        }
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                        Thread.Sleep(200);
+                    }
+                }
+
+                // Phase 4: Update references in assemblies BEFORE releasing COM objects
+                Console.WriteLine("=== Phase 4: Updating References ===");
+
+                foreach (var mainAssembly in assemblies)
+                {
+                    string originalPath = System.IO.Path.IsPathRooted(mainAssembly)
+                        ? mainAssembly
+                        : System.IO.Path.Combine(drawingsPath, mainAssembly);
+
+                    // Determine the current path (may have been renamed)
+                    string currentPath = successfulRenames.ContainsKey(originalPath)
+                        ? successfulRenames[originalPath]
+                        : originalPath;
+
+                    if (!System.IO.File.Exists(currentPath))
+                    {
+                        warnings.Add($"Assembly not found after rename: {currentPath}");
+                        continue;
+                    }
+
+                    // Wait and ensure file is not locked
+                    if (IsFileLocked(currentPath))
+                    {
+                        Console.WriteLine($"Waiting for file lock to clear: {currentPath}");
+                        Thread.Sleep(3000);
+                        if (IsFileLocked(currentPath))
+                        {
+                            warnings.Add($"File still locked, skipping: {currentPath}");
+                            continue;
+                        }
+                    }
+
+                    AssemblyDocument? asmDoc = null;
+                    try
+                    {
+                        Console.WriteLine($"Opening for reference update: {currentPath}");
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(currentPath, false);
+                        Thread.Sleep(1000); // Give Inventor time to load the document
+
+                        bool referencesUpdated = false;
+                        var failedUpdates = new List<string>();
+
+                        var occurrences = asmDoc.ComponentDefinition.Occurrences;
+                        Thread.Sleep(500); // Give Inventor time to process occurrences
+
+                        // Create a snapshot of occurrences to avoid collection modification issues
+                        var occurrenceData = new List<(ComponentOccurrence occ, string oldPath, string newPath)>();
+                        foreach (ComponentOccurrence occ in occurrences)
+                        {
+                            try
+                            {
+                                string currentRefPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
+                                if (successfulRenames.ContainsKey(currentRefPath))
+                                {
+                                    string newRefPath = successfulRenames[currentRefPath];
+                                    occurrenceData.Add((occ, currentRefPath, newRefPath));
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                warnings.Add($"Error reading occurrence reference: {ex.Message}");
+                            }
+                        }
+
+                        // Process the updates
+                        foreach (var (occ, oldPath, newPath) in occurrenceData)
+                        {
+                            int retryCount = 0;
+                            bool updated = false;
+                            while (retryCount < 3 && !updated)
+                            {
+                                try
+                                {
+                                    if (!System.IO.File.Exists(newPath))
+                                    {
+                                        failedUpdates.Add($"Target file doesn't exist: {System.IO.Path.GetFileName(newPath)}");
+                                        break;
+                                    }
+                                    // Skip suppressed or unresolved occurrences
+                                    if (occ.Suppressed || occ.ReferencedDocumentDescriptor.ReferenceMissing)
+                                    {
+                                        failedUpdates.Add($"Skipped suppressed or unresolved occurrence: {occ.Name} in {asmDoc.DisplayName}");
+                                        break;
+                                    }
+                                    // Only replace if the reference is not already correct
+                                    if (!string.Equals(occ.ReferencedDocumentDescriptor.FullDocumentName, newPath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        occ.Replace(newPath, false);
+                                        referencesUpdated = true;
+                                        Console.WriteLine($"Updated reference: {System.IO.Path.GetFileName(oldPath)} -> {System.IO.Path.GetFileName(newPath)} in {asmDoc.DisplayName} (Occurrence: {occ.Name})");
+                                    }
+                                    updated = true;
+                                }
+                                catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                {
+                                    retryCount++;
+                                    if (retryCount < 3)
+                                    {
+                                        Thread.Sleep(500);
+                                        continue;
+                                    }
+                                    failedUpdates.Add($"Failed to update: {System.IO.Path.GetFileName(oldPath)} in {asmDoc.DisplayName} (Occurrence: {occ.Name}): {comEx.Message} (E_FAIL after 3 attempts)");
+                                    break;
+                                }
+                                catch (Exception ex)
+                                {
+                                    failedUpdates.Add($"Failed to update: {System.IO.Path.GetFileName(oldPath)} in {asmDoc.DisplayName} (Occurrence: {occ.Name}): {ex.Message}");
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Report failed updates
+                        if (failedUpdates.Count > 0)
+                        {
+                            warnings.AddRange(failedUpdates);
+                        }
+
+                        // Update and save if we made changes
+                        if (referencesUpdated)
+                        {
+                            try
+                            {
+                                asmDoc.Update();
+                                Thread.Sleep(1000); // Give Inventor time to update
+                                asmDoc.Save();
+                                Thread.Sleep(1000); // Give Inventor time to save
+                                Console.WriteLine($"Saved assembly: {currentPath}");
+                            }
+                            catch (Exception updateEx)
+                            {
+                                warnings.Add($"Failed to update/save assembly {currentPath}: {updateEx.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"Error processing assembly {currentPath}: {ex.Message}");
                     }
                     finally
                     {
@@ -1415,53 +1771,31 @@ namespace InventorApp.API.Services
                         {
                             try
                             {
-                                asmDoc.Close(true);
+                                asmDoc.Close(false);
                                 Marshal.ReleaseComObject(asmDoc);
-                                asmDoc = null;
                             }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"Error closing assembly document: {ex.Message}");
-                            }
+                            catch { }
                         }
-                    }
-
-                    // Optionally rename the main assembly file itself
-                    string mainPartNumber = GetPartNumberFromFile(mainAssemblyPath);
-                    if (!string.IsNullOrEmpty(mainPartNumber) &&
-                        mainPartNumber.StartsWith(partPrefix, StringComparison.OrdinalIgnoreCase))
-                    {
-                        string suffix = mainPartNumber.Substring(partPrefix.Length).TrimStart('_');
-                        string newMainName = $"{partPrefix}_{suffix}";
-                        string mainExt = System.IO.Path.GetExtension(mainAssemblyPath);
-                        string mainNewPath = System.IO.Path.Combine(drawingsPath, newMainName + mainExt);
-
-                        if (!System.IO.File.Exists(mainNewPath))
-                        {
-                            try
-                            {
-                                System.IO.File.Move(mainAssemblyPath, mainNewPath);
-                                Console.WriteLine($"Renamed main assembly: {mainAssemblyPath} -> {mainNewPath}");
-                            }
-                            catch (Exception ex)
-                            {
-                                warnings.Add($"Failed to rename main assembly: {ex.Message}");
-                            }
-                        }
-                        else
-                        {
-                            warnings.Add($"Target main assembly file already exists: {mainNewPath}");
-                        }
+                        // Force garbage collection
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                        Thread.Sleep(500); // Small delay between assemblies
                     }
                 }
 
                 if (warnings.Count > 0)
                 {
+                    Console.WriteLine("\n=== WARNINGS ===");
                     foreach (var w in warnings)
                         Console.WriteLine(w);
                 }
 
-                return true;
+                Console.WriteLine($"\n=== OPERATION COMPLETE ===");
+                Console.WriteLine($"Total files renamed: {successfulRenames.Count}");
+                Console.WriteLine($"Total assemblies processed: {assemblies.Count}");
+
+                return successfulRenames.Count > 0;
             }
             catch (Exception ex)
             {
@@ -1470,37 +1804,835 @@ namespace InventorApp.API.Services
             }
             finally
             {
-                if (_inventorApp != null)
+                // Cleanup
+                foreach (var doc in processedAssemblies)
                 {
-                    _inventorApp.SilentOperation = false; // Reset after operation
-
-                    // Close all remaining documents
-                    while (_inventorApp.Documents.Count > 0)
+                    try
                     {
-                        try
-                        {
-                            Document doc = _inventorApp.Documents[1];
-                            doc.Close(true);
-                            Marshal.ReleaseComObject(doc);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error closing document: {ex.Message}");
-                        }
+                        doc.Close(false);
+                        Marshal.ReleaseComObject(doc);
                     }
+                    catch { }
+                }
+
+                CleanupInventorApp();
+                GC.Collect();
+            }
+        }
+
+        /// <summary>
+        /// Analyzes what files would be renamed without performing the actual rename operation
+        /// </summary>
+        public object AnalyzeDesignAssistRename(string drawingsPath, string newPrefix, List<string>? assemblyList = null)
+        {
+            var analysis = new
+            {
+                assembliesFound = 0,
+                filesToRename = 0,
+                filesSkipped = 0,
+                contentCenterFiles = 0,
+                alreadyCorrectPrefix = 0,
+                noPartNumber = 0,
+                assemblyList = new List<string>(),
+                filesToRenameList = new List<object>(),
+                filesSkippedList = new List<object>(),
+                warnings = new List<string>()
+            };
+
+            var assembliesFound = 0;
+            var filesToRename = 0;
+            var filesSkipped = 0;
+            var contentCenterFiles = 0;
+            var alreadyCorrectPrefix = 0;
+            var noPartNumber = 0;
+            var assemblyListResult = new List<string>();
+            var filesToRenameList = new List<object>();
+            var filesSkippedList = new List<object>();
+            var warnings = new List<string>();
+
+            try
+            {
+                var inventorApp = GetInventorApplication();
+                inventorApp.SilentOperation = true;
+                inventorApp.Visible = false;
+
+                // Auto-discover assembly files if no list provided
+                List<string> assemblies;
+                if (assemblyList == null || assemblyList.Count == 0)
+                {
+                    Console.WriteLine($"Analyzing: Auto-discovering assembly files in: {drawingsPath}");
+                    assemblies = DiscoverAssemblyFiles(drawingsPath);
+
+                    if (assemblies.Count == 0)
+                    {
+                        warnings.Add($"No assembly files found in path: {drawingsPath}");
+                        return new
+                        {
+                            assembliesFound = 0,
+                            filesToRename = 0,
+                            filesSkipped = 0,
+                            contentCenterFiles = 0,
+                            alreadyCorrectPrefix = 0,
+                            noPartNumber = 0,
+                            assemblyList = new List<string>(),
+                            filesToRenameList = new List<object>(),
+                            filesSkippedList = new List<object>(),
+                            warnings = warnings
+                        };
+                    }
+
+                    Console.WriteLine($"Found {assemblies.Count} assembly files to analyze:");
+                    assemblies.ForEach(a => Console.WriteLine($"  - {a}"));
+                }
+                else
+                {
+                    assemblies = assemblyList;
+                }
+
+                assembliesFound = assemblies.Count;
+                assemblyListResult = assemblies;
+
+                // Analyze each assembly
+                foreach (var mainAssembly in assemblies)
+                {
+                    string mainAssemblyPath = System.IO.Path.IsPathRooted(mainAssembly)
+                        ? mainAssembly
+                        : System.IO.Path.Combine(drawingsPath, mainAssembly);
+
+                    if (!System.IO.File.Exists(mainAssemblyPath))
+                    {
+                        warnings.Add($"Main assembly file not found: {mainAssemblyPath}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"Analyzing assembly: {mainAssemblyPath}");
+                    AssemblyDocument? asmDoc = null;
 
                     try
                     {
-                        _inventorApp.Quit();
-                        Marshal.ReleaseComObject(_inventorApp);
-                        _inventorApp = null;
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(mainAssemblyPath, true);
+
+                        var occurrences = asmDoc.ComponentDefinition.Occurrences;
+
+                        // Analyze occurrences in this assembly
+                        foreach (ComponentOccurrence occ in occurrences)
+                        {
+                            try
+                            {
+                                string refPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
+                                string fileName = System.IO.Path.GetFileNameWithoutExtension(refPath);
+                                string fileExt = System.IO.Path.GetExtension(refPath);
+
+                                // Check if it's a Content Center file
+                                if (IsContentCenterFile(refPath))
+                                {
+                                    contentCenterFiles++;
+                                    filesSkippedList.Add(new
+                                    {
+                                        fileName = fileName + fileExt,
+                                        reason = "Content Center file",
+                                        fullPath = refPath
+                                    });
+                                    continue;
+                                }
+
+                                // Check if it already has the correct prefix
+                                if (fileName.StartsWith(newPrefix, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    alreadyCorrectPrefix++;
+                                    filesSkippedList.Add(new
+                                    {
+                                        fileName = fileName + fileExt,
+                                        reason = "Already has correct prefix",
+                                        fullPath = refPath
+                                    });
+                                    continue;
+                                }
+
+                                // Check if it should be renamed based on part number
+                                if (!ShouldRename(occ, newPrefix))
+                                {
+                                    noPartNumber++;
+                                    filesSkippedList.Add(new
+                                    {
+                                        fileName = fileName + fileExt,
+                                        reason = "Part number doesn't match prefix pattern",
+                                        fullPath = refPath
+                                    });
+                                    continue;
+                                }
+
+                                // This file would be renamed
+                                filesToRename++;
+                                string newFileName = GenerateUniqueFileName(fileName, newPrefix, fileExt, System.IO.Path.GetDirectoryName(refPath)!, new HashSet<string>());
+                                filesToRenameList.Add(new
+                                {
+                                    currentFileName = fileName + fileExt,
+                                    newFileName = newFileName,
+                                    fullPath = refPath,
+                                    newFullPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(refPath)!, newFileName)
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                warnings.Add($"Warning: Could not analyze occurrence in {mainAssemblyPath}: {ex.Message}");
+                            }
+                        }
+
+                        // Analyze main assembly
+                        string mainFileName = System.IO.Path.GetFileNameWithoutExtension(mainAssemblyPath);
+                        string mainExt = System.IO.Path.GetExtension(mainAssemblyPath);
+
+                        if (ShouldRenameAssembly(asmDoc, newPrefix) && !mainFileName.StartsWith(newPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            filesToRename++;
+                            string newMainFileName = GenerateUniqueFileName(mainFileName, newPrefix, mainExt, drawingsPath, new HashSet<string>());
+                            filesToRenameList.Add(new
+                            {
+                                currentFileName = mainFileName + mainExt,
+                                newFileName = newMainFileName,
+                                fullPath = mainAssemblyPath,
+                                newFullPath = System.IO.Path.Combine(drawingsPath, newMainFileName),
+                                isMainAssembly = true
+                            });
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error during Inventor cleanup: {ex.Message}");
+                        warnings.Add($"Error analyzing assembly {mainAssemblyPath}: {ex.Message}");
                     }
+                    finally
+                    {
+                        if (asmDoc != null)
+                        {
+                            try
+                            {
+                                asmDoc.Close(false);
+                                Marshal.ReleaseComObject(asmDoc);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
+                // Cleanup
+                CleanupInventorApp();
+                GC.Collect();
+
+                return new
+                {
+                    assembliesFound,
+                    filesToRename,
+                    filesSkipped = contentCenterFiles + alreadyCorrectPrefix + noPartNumber,
+                    contentCenterFiles,
+                    alreadyCorrectPrefix,
+                    noPartNumber,
+                    assemblyList = assemblyListResult,
+                    filesToRenameList,
+                    filesSkippedList,
+                    warnings
+                };
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"Analysis error: {ex.Message}");
+                return new
+                {
+                    assembliesFound = 0,
+                    filesToRename = 0,
+                    filesSkipped = 0,
+                    contentCenterFiles = 0,
+                    alreadyCorrectPrefix = 0,
+                    noPartNumber = 0,
+                    assemblyList = new List<string>(),
+                    filesToRenameList = new List<object>(),
+                    filesSkippedList = new List<object>(),
+                    warnings = warnings
+                };
+            }
+        }
+
+        // *** HELPER METHODS TO ADD ***
+
+        /// <summary>
+        /// Enhanced method to try different approaches for replacing references with better error handling
+        /// </summary>
+        private bool TryReplaceReference(ComponentOccurrence occ, string oldPath, string newPath)
+        {
+            const int maxRetries = 3;
+            const int retryDelayMs = 2000;
+
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    // Verify the new file exists and is accessible
+                    if (!System.IO.File.Exists(newPath))
+                    {
+                        Console.WriteLine($"Target file doesn't exist: {newPath}");
+                        return false;
+                    }
+
+                    // Enhanced file lock checking with longer timeout
+                    if (IsFileLocked(newPath, 5))
+                    {
+                        Console.WriteLine($"Target file is locked (attempt {attempt}/{maxRetries}): {newPath}");
+                        if (attempt < maxRetries)
+                        {
+                            Thread.Sleep(retryDelayMs);
+                            continue;
+                        }
+                        return false;
+                    }
+
+                    // Get the assembly document and start a transaction if possible
+                    var asmDoc = (AssemblyDocument)occ.ContextDefinition.Document;
+
+                    // Force update the document references first
+                    try
+                    {
+                        ((Inventor.Document)asmDoc).Update();
+                        Thread.Sleep(1000); // Brief pause after update
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Document update failed: {ex.Message}");
+                    }
+
+                    // Store the occurrence's properties before any operations
+                    var transform = occ.Transformation;
+                    var visible = occ.Visible;
+                    var isSuppressed = occ.Suppressed;
+                    var name = occ.Name;
+
+                    // Method 1: Try direct replacement first
+                    try
+                    {
+                        // Get the referenced document descriptor
+                        var refDocDesc = occ.ReferencedDocumentDescriptor;
+                        if (refDocDesc != null)
+                        {
+                            // Try to close the referenced document first
+                            try
+                            {
+                                var refDoc = refDocDesc.ReferencedDocument;
+                                if (refDoc != null)
+                                {
+                                    ((Inventor.Document)refDoc).Close(false);
+                                    Thread.Sleep(1000);
+                                }
+                            }
+                            catch { } // Ignore errors when closing
+
+                            // Try to replace using the new path
+                            occ.Replace(newPath, false);
+
+                            // Force update after replacement
+                            ((Inventor.Document)asmDoc).Update();
+                            Thread.Sleep(1000);
+
+                            return true;
+                        }
+                    }
+                    catch (Exception ex1)
+                    {
+                        Console.WriteLine($"Method 1 - Replace(path, false) failed: {ex1.Message}");
+
+                        // Method 2: Try with different parameters
+                        try
+                        {
+                            // Force update again before second attempt
+                            ((Inventor.Document)asmDoc).Update();
+                            Thread.Sleep(1000);
+
+                            // Get the assembly definition
+                            var asmDef = (AssemblyComponentDefinition)occ.ContextDefinition;
+
+                            // Try to create the new occurrence first
+                            var newOcc = asmDef.Occurrences.Add(newPath, transform);
+
+                            // Apply properties
+                            newOcc.Visible = visible;
+                            if (isSuppressed)
+                            {
+                                newOcc.Suppress();
+                            }
+
+                            // Try to preserve the name if possible
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(name) && name != newOcc.Name)
+                                {
+                                    newOcc.Name = name;
+                                }
+                            }
+                            catch { } // Ignore name setting errors
+
+                            // Force update before deletion
+                            ((Inventor.Document)asmDoc).Update();
+                            Thread.Sleep(1000);
+
+                            // Delete the old occurrence
+                            occ.Delete();
+
+                            // Final update
+                            ((Inventor.Document)asmDoc).Update();
+
+                            return true;
+                        }
+                        catch (Exception ex2)
+                        {
+                            Console.WriteLine($"Method 2 - Delete and recreate failed: {ex2.Message}");
+
+                            // Method 3: Try using the document's reference update capabilities
+                            try
+                            {
+                                // Force update before final attempt
+                                ((Inventor.Document)asmDoc).Update();
+                                Thread.Sleep(1000);
+
+                                // Try to update the reference at the document level
+                                var refDocuments = asmDoc.ReferencedDocuments;
+                                foreach (Document refDoc in refDocuments)
+                                {
+                                    if (string.Equals(refDoc.FullFileName, oldPath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        // Try to close and reopen the reference
+                                        ((Inventor.Document)refDoc).Close(false);
+                                        Thread.Sleep(1000);
+
+                                        // Force the assembly to update its references
+                                        ((Inventor.Document)asmDoc).Update();
+                                        return true;
+                                    }
+                                }
+                            }
+                            catch (Exception ex3)
+                            {
+                                Console.WriteLine($"Method 3 - Document reference update failed: {ex3.Message}");
+
+                                if (attempt < maxRetries)
+                                {
+                                    Console.WriteLine($"Retrying in {retryDelayMs}ms...");
+                                    Thread.Sleep(retryDelayMs);
+                                    continue;
+                                }
+                                return false;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Critical error in TryReplaceReference (attempt {attempt}/{maxRetries}): {ex.Message}");
+                    if (attempt < maxRetries)
+                    {
+                        Thread.Sleep(retryDelayMs);
+                        continue;
+                    }
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        private bool RecreateOccurrenceImproved(ComponentOccurrence originalOcc, string newPath)
+        {
+            try
+            {
+                // Store all properties we need to preserve
+                var transformation = originalOcc.Transformation;
+                var visible = originalOcc.Visible;
+                var name = originalOcc.Name;
+                var isSuppressed = originalOcc.Suppressed;
+
+                // Get the assembly definition
+                var asmDef = (AssemblyComponentDefinition)originalOcc.ContextDefinition;
+
+                // Store the index for placement
+                int originalIndex = -1;
+                for (int i = 1; i <= asmDef.Occurrences.Count; i++)
+                {
+                    if (asmDef.Occurrences[i] == originalOcc)
+                    {
+                        originalIndex = i;
+                        break;
+                    }
+                }
+
+                // Force update before recreation
+                ((Inventor.Document)asmDef.Document).Update();
+                Thread.Sleep(1000);
+
+                // Create the new occurrence first
+                var newOcc = asmDef.Occurrences.Add(newPath, transformation);
+
+                // Apply properties
+                newOcc.Visible = visible;
+
+                // Handle suppression state
+                if (isSuppressed)
+                {
+                    try
+                    {
+                        newOcc.Suppress();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not suppress new occurrence: {ex.Message}");
+                    }
+                }
+
+                // Try to preserve the name if possible
+                try
+                {
+                    if (!string.IsNullOrEmpty(name) && name != newOcc.Name)
+                    {
+                        newOcc.Name = name;
+                    }
+                }
+                catch
+                {
+                    // Name might not be settable, ignore
+                }
+
+                // Force update before deletion
+                ((Inventor.Document)asmDef.Document).Update();
+                Thread.Sleep(1000);
+
+                // Delete the original occurrence
+                originalOcc.Delete();
+
+                // Final update
+                ((Inventor.Document)asmDef.Document).Update();
+
+                Console.WriteLine($"Successfully recreated occurrence: {System.IO.Path.GetFileName(newPath)}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RecreateOccurrenceImproved failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Try to update references at the assembly document level
+        /// </summary>
+        private bool UpdateReferenceViaAssemblyDocument(AssemblyDocument asmDoc, string oldPath, string newPath)
+        {
+            try
+            {
+                // Try using the document's reference update capabilities
+                var refDocuments = asmDoc.ReferencedDocuments;
+
+                foreach (Document refDoc in refDocuments)
+                {
+                    if (string.Equals(refDoc.FullFileName, oldPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Try to close and reopen the reference
+                        try
+                        {
+                            refDoc.Close(false);
+
+                            // Force the assembly to update its references
+                            ((Inventor.Document)asmDoc).Update();
+
+                            return true;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Reference document update failed: {ex.Message}");
+                            return false;
+                        }
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"UpdateReferenceViaAssemblyDocument failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Enhanced file lock checking with retry mechanism
+        /// </summary>
+        private bool IsFileLocked(string filePath, int maxRetries = 3)
+        {
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    using (var stream = System.IO.File.Open(filePath, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None))
+                    {
+                        return false; // File is not locked
+                    }
+                }
+                catch (System.IO.IOException)
+                {
+                    if (attempt < maxRetries)
+                    {
+                        Console.WriteLine($"File locked, attempt {attempt}/{maxRetries}: {filePath}");
+                        Thread.Sleep(2000); // Wait 2 seconds before retry
+                        continue;
+                    }
+                    return true; // File is locked after all retries
+                }
+                catch (Exception)
+                {
+                    return false; // If we can't check, assume it's not locked
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Enhanced Inventor cleanup with more aggressive COM object release
+        /// </summary>
+        private void ForceInventorCleanup(Inventor.Application inventorApp)
+        {
+            try
+            {
+                Console.WriteLine("Starting enhanced Inventor cleanup...");
+
+                // Close all open documents
+                foreach (Document doc in inventorApp.Documents)
+                {
+                    try
+                    {
+                        doc.Close(false);
+                        Marshal.ReleaseComObject(doc);
+                    }
+                    catch { } // Ignore errors during cleanup
+                }
+
+                // Force garbage collection
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+
+                // Additional COM object cleanup
+                try
+                {
+                    // Release any remaining COM objects
+                    Marshal.FinalReleaseComObject(inventorApp);
+                }
+                catch { } // Ignore errors during final cleanup
+
+                // Final garbage collection
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+
+                Console.WriteLine("Enhanced Inventor cleanup completed");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during Inventor cleanup: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Wait for file system to stabilize after file operations
+        /// </summary>
+        private void WaitForFileSystemStabilization(int timeoutSeconds = 30)
+        {
+            Console.WriteLine($"Waiting for file system stabilization ({timeoutSeconds}s)...");
+
+            var startTime = DateTime.Now;
+
+            while ((DateTime.Now - startTime).TotalSeconds < timeoutSeconds)
+            {
+                // Force multiple garbage collections
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+
+                Thread.Sleep(2000);
+
+                // You could add additional checks here if needed
+                // For example, checking if specific files are still locked
+            }
+
+            Console.WriteLine("File system stabilization wait completed");
+        }
+        /// <summary>
+        /// Determines if a file is a Content Center file that should not be renamed
+        /// </summary>
+        private bool IsContentCenterFile(string filePath)
+        {
+            // Check if the path contains Content Center indicators
+            return filePath.Contains("Content Center Files", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("Parker", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("ISO", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("ANSI", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("DIN", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("JIS", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains("GB", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Determines if a file should be renamed based on part number prefix matching from iProperties
+        /// </summary>
+        private bool ShouldRename(ComponentOccurrence occurrence, string partPrefix)
+        {
+            try
+            {
+                // Get the part number directly from the occurrence's referenced document
+                Document referencedDoc = (Document)occurrence.ReferencedDocumentDescriptor.ReferencedDocument;
+
+                if (referencedDoc == null)
+                    return false;
+
+                string partNumber = "";
+
+                // Get the part number from iProperties
+                if (referencedDoc is PartDocument partDoc)
+                {
+                    partNumber = partDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+                }
+                else if (referencedDoc is AssemblyDocument asmDoc)
+                {
+                    partNumber = asmDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+                }
+
+                if (string.IsNullOrWhiteSpace(partNumber))
+                    return false;
+
+                // Extract the first part before underscore or dash from part number
+                string[] parts = partNumber.Split(new char[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length == 0)
+                    return false;
+
+                string firstPart = parts[0].Trim();
+
+                // Check if the first part matches the part prefix (e.g., "ABC" matches "ABC")
+                return string.Equals(firstPart, partPrefix, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reading part number from occurrence: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Determines if a main assembly should be renamed based on part number prefix matching from iProperties
+        /// </summary>
+        private bool ShouldRenameAssembly(AssemblyDocument asmDoc, string partPrefix)
+        {
+            try
+            {
+                string partNumber = asmDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+
+                if (string.IsNullOrWhiteSpace(partNumber))
+                    return false;
+
+                // Extract the first part before underscore or dash from part number
+                string[] parts = partNumber.Split(new char[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length == 0)
+                    return false;
+
+                string firstPart = parts[0].Trim();
+
+                // Check if the first part matches the part prefix (e.g., "ABC" matches "ABC")
+                return string.Equals(firstPart, partPrefix, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reading part number from assembly: {ex.Message}");
+                return false;
+            }
+        }
+        private string GenerateUniqueFileName(string originalName, string newPrefix, string extension, string directory, HashSet<string> usedNames)
+        {
+            // Remove any existing prefix pattern (like ABC099001, XYZ1, etc.)
+            string cleanName = originalName;
+
+            // Remove common prefixes (adjust regex pattern as needed)
+            var prefixPattern = @"^[A-Z]{2,}\d*_?";
+            var match = System.Text.RegularExpressions.Regex.Match(cleanName, prefixPattern);
+            if (match.Success)
+            {
+                cleanName = cleanName.Substring(match.Length);
+            }
+
+            // Ensure we have something to work with
+            if (string.IsNullOrEmpty(cleanName))
+            {
+                cleanName = "Part1";
+            }
+
+            // Generate base name
+            string baseName = $"{newPrefix}_{cleanName.TrimStart('_')}";
+            string fullName = baseName + extension;
+
+            // Check for conflicts and resolve
+            int counter = 1;
+            while (usedNames.Contains(fullName) || System.IO.File.Exists(System.IO.Path.Combine(directory, fullName)))
+            {
+                fullName = $"{baseName}_{counter:D2}{extension}";
+                counter++;
+            }
+
+            return fullName;
+        }
+        private List<string> DiscoverAssemblyFiles(string drawingsPath)
+        {
+            try
+            {
+                // Get ALL .iam files in the directory - no filtering needed
+                return Directory.GetFiles(drawingsPath, "*.iam", SearchOption.TopDirectoryOnly)
+                    .Select(System.IO.Path.GetFileName)
+                    .Where(name => !string.IsNullOrEmpty(name)) // Filter out any null/empty names
+                    .OrderByDescending(name => name) // Descending order by name
+                    .ToList()!; // Safe to use ! here since we filtered nulls above
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error discovering assembly files: {ex.Message}");
+                return new List<string>();
+            }
+        }
+
+        private void CleanupInventorApp()
+        {
+            if (_inventorApp != null)
+            {
+                _inventorApp.SilentOperation = false;
+
+                // Close all remaining documents
+                while (_inventorApp.Documents.Count > 0)
+                {
+                    try
+                    {
+                        Document doc = _inventorApp.Documents[1];
+                        doc.Close(true);
+                        Marshal.ReleaseComObject(doc);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error closing document: {ex.Message}");
+                    }
+                }
+
+                try
+                {
+                    _inventorApp.Quit();
+                    Marshal.ReleaseComObject(_inventorApp);
+                    _inventorApp = null;
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error during Inventor cleanup: {ex.Message}");
                 }
             }
         }
