@@ -2681,20 +2681,111 @@ namespace InventorApp.API.Services
 
             Console.WriteLine($"Starting recursive rename for {assemblyDocumentNames.Count} assemblies with {fileNames.Count} file mappings");
 
+            // First, handle main assemblies that need to be renamed
+            var mainAssembliesToRename = new List<string>();
             foreach (var assemblyDocumentName in assemblyDocumentNames)
             {
                 string assemblyFilePath = System.IO.Path.GetFullPath(assemblyDocumentName);
+                if (fileNames.ContainsKey(assemblyFilePath))
+                {
+                    mainAssembliesToRename.Add(assemblyFilePath);
+                }
+            }
+
+            // Process main assemblies first
+            foreach (var assemblyFilePath in mainAssembliesToRename)
+            {
                 if (!System.IO.File.Exists(assemblyFilePath))
                 {
-                    Console.WriteLine($"Assembly file not found: {assemblyFilePath}");
+                    Console.WriteLine($"Main assembly file not found: {assemblyFilePath}");
                     continue;
                 }
 
-                Console.WriteLine($"Processing assembly: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                string newAssemblyPath = fileNames[assemblyFilePath];
+                Console.WriteLine($"Processing main assembly: {System.IO.Path.GetFileName(assemblyFilePath)} -> {System.IO.Path.GetFileName(newAssemblyPath)}");
+                
                 AssemblyDocument? asmDoc = null;
                 try
                 {
                     asmDoc = (AssemblyDocument)inventorApp.Documents.Open(assemblyFilePath, true);
+                    pathToDelete.Add(assemblyFilePath);
+                    
+                    Console.WriteLine($"Saving main assembly as: {System.IO.Path.GetFileName(newAssemblyPath)}");
+                    asmDoc.SaveAs(newAssemblyPath, false);
+                    
+                    // Update assembly number property
+                    try
+                    {
+                        var designProps = asmDoc.PropertySets["Design Tracking Properties"];
+                        designProps["Part Number"].Value = System.IO.Path.GetFileNameWithoutExtension(newAssemblyPath);
+                        Console.WriteLine($"Updated main assembly number to: {System.IO.Path.GetFileNameWithoutExtension(newAssemblyPath)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not update main assembly number: {ex.Message}");
+                    }
+                    
+                    // Enable & sort BOM (if needed)
+                    try
+                    {
+                        var bom = asmDoc.ComponentDefinition.BOM;
+                        bom.StructuredViewEnabled = true;
+                        bom.StructuredViewFirstLevelOnly = false;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not configure BOM: {ex.Message}");
+                    }
+                    
+                    asmDoc.Update();
+                    Console.WriteLine("Main assembly document updated successfully");
+                    asmDoc.Save();
+                    Console.WriteLine("Main assembly saved successfully");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error processing main assembly {assemblyFilePath}: {ex.Message}");
+                }
+                finally
+                {
+                    if (asmDoc != null)
+                    {
+                        try
+                        {
+                            asmDoc.Close(true);
+                            Marshal.ReleaseComObject(asmDoc);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error closing main assembly document: {ex.Message}");
+                        }
+                    }
+                }
+            }
+
+            // Now process all assemblies for their referenced documents
+            foreach (var assemblyDocumentName in assemblyDocumentNames)
+            {
+                string assemblyFilePath = System.IO.Path.GetFullPath(assemblyDocumentName);
+                
+                // Check if this assembly was renamed and use the new path
+                string currentAssemblyPath = assemblyFilePath;
+                if (fileNames.ContainsKey(assemblyFilePath))
+                {
+                    currentAssemblyPath = fileNames[assemblyFilePath];
+                }
+                
+                if (!System.IO.File.Exists(currentAssemblyPath))
+                {
+                    Console.WriteLine($"Assembly file not found: {currentAssemblyPath}");
+                    continue;
+                }
+
+                Console.WriteLine($"Processing assembly: {System.IO.Path.GetFileName(currentAssemblyPath)}");
+                AssemblyDocument? asmDoc = null;
+                try
+                {
+                    asmDoc = (AssemblyDocument)inventorApp.Documents.Open(currentAssemblyPath, true);
                     var docDescriptors = asmDoc.ReferencedDocumentDescriptors;
                     Console.WriteLine($"Found {docDescriptors.Count} referenced documents");
 
@@ -2926,8 +3017,12 @@ namespace InventorApp.API.Services
                             {
                                 Console.WriteLine($"Updating reference in parent assembly: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newFullName)}");
                                 
-                                // Find and replace the occurrence in the parent assembly
+                                // Find and replace the occurrence in the parent assembly using multiple strategies
                                 bool referenceUpdated = false;
+                                string originalFileName = System.IO.Path.GetFileNameWithoutExtension(referencedPath);
+                                string targetFileName = System.IO.Path.GetFileNameWithoutExtension(newFullName);
+                                
+                                // Strategy 1: Try to find by exact path match
                                 foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
                                 {
                                     try
@@ -2935,7 +3030,7 @@ namespace InventorApp.API.Services
                                         string occRefPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
                                         if (occRefPath.Equals(referencedPath, StringComparison.OrdinalIgnoreCase))
                                         {
-                                            Console.WriteLine($"Found matching occurrence: {occ.Name}, replacing reference...");
+                                            Console.WriteLine($"Found matching occurrence by path: {occ.Name}, replacing reference...");
                                             occ.Replace(newFullName, false);
                                             referenceUpdated = true;
                                             Console.WriteLine($"Successfully replaced reference for occurrence: {occ.Name}");
@@ -2948,10 +3043,77 @@ namespace InventorApp.API.Services
                                         continue;
                                     }
                                 }
+                                
+                                // Strategy 2: If not found by path, try to find by component name
+                                if (!referenceUpdated)
+                                {
+                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
+                                    {
+                                        try
+                                        {
+                                            // Check if the occurrence name matches the original file name
+                                            if (occ.Name.Equals(originalFileName, StringComparison.OrdinalIgnoreCase) ||
+                                                occ.Name.StartsWith(originalFileName + ":", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                Console.WriteLine($"Found matching occurrence by name: {occ.Name}, replacing reference...");
+                                                occ.Replace(newFullName, false);
+                                                referenceUpdated = true;
+                                                Console.WriteLine($"Successfully replaced reference for occurrence: {occ.Name}");
+                                                break;
+                                            }
+                                        }
+                                        catch (Exception occEx)
+                                        {
+                                            Console.WriteLine($"Warning: Error checking occurrence {occ.Name}: {occEx.Message}");
+                                            continue;
+                                        }
+                                    }
+                                }
+                                
+                                // Strategy 3: If still not found, try to find by partial name match
+                                if (!referenceUpdated)
+                                {
+                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
+                                    {
+                                        try
+                                        {
+                                            // Check if the occurrence name contains the original file name
+                                            if (occ.Name.Contains(originalFileName, StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                Console.WriteLine($"Found matching occurrence by partial name: {occ.Name}, replacing reference...");
+                                                occ.Replace(newFullName, false);
+                                                referenceUpdated = true;
+                                                Console.WriteLine($"Successfully replaced reference for occurrence: {occ.Name}");
+                                                break;
+                                            }
+                                        }
+                                        catch (Exception occEx)
+                                        {
+                                            Console.WriteLine($"Warning: Error checking occurrence {occ.Name}: {occEx.Message}");
+                                            continue;
+                                        }
+                                    }
+                                }
 
                                 if (!referenceUpdated)
                                 {
                                     Console.WriteLine($"Warning: Could not find occurrence to replace for: {System.IO.Path.GetFileName(referencedPath)}");
+                                    Console.WriteLine($"Searched for: {originalFileName} -> {targetFileName} in {asmDoc.ComponentDefinition.Occurrences.Count} occurrences");
+                                    
+                                    // Log all occurrences for debugging
+                                    Console.WriteLine("Available occurrences:");
+                                    foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
+                                    {
+                                        try
+                                        {
+                                            string occRefPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
+                                            Console.WriteLine($"  - {occ.Name} -> {System.IO.Path.GetFileName(occRefPath)}");
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"  - {occ.Name} -> Error getting path: {ex.Message}");
+                                        }
+                                    }
                                 }
                             }
                             catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
@@ -2988,12 +3150,12 @@ namespace InventorApp.API.Services
                     // Force update and save the assembly to ensure all reference changes are applied
                     try
                     {
-                        Console.WriteLine($"Forcing update and save of assembly: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                        Console.WriteLine($"Forcing update and save of assembly: {System.IO.Path.GetFileName(currentAssemblyPath)}");
                         asmDoc.Update();
                         Thread.Sleep(1000); // Give Inventor time to process the update
                         asmDoc.Save2(true); // Save with Yes to All, suppress dialogs
                         Thread.Sleep(1000); // Give Inventor time to save
-                        Console.WriteLine($"Assembly updated and saved successfully: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                        Console.WriteLine($"Assembly updated and saved successfully: {System.IO.Path.GetFileName(currentAssemblyPath)}");
                     }
                     catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
                     {
