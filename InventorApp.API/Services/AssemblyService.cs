@@ -1841,7 +1841,6 @@ namespace InventorApp.API.Services
 
             var assembliesFound = 0;
             var filesToRename = 0;
-            var filesSkipped = 0;
             var contentCenterFiles = 0;
             var alreadyCorrectPrefix = 0;
             var noPartNumber = 0;
@@ -2667,6 +2666,630 @@ namespace InventorApp.API.Services
             catch
             {
                 return "";
+            }
+        }
+
+        /// <summary>
+        /// Recursively renames assemblies and parts, updates references and properties, and returns a list of old file paths to delete.
+        /// </summary>
+        public List<string> RenameAssemblyRecursively(List<string> assemblyDocumentNames, Dictionary<string, string> fileNames)
+        {
+            var pathToDelete = new List<string>();
+            var inventorApp = GetInventorApplication();
+            inventorApp.SilentOperation = true;
+            inventorApp.Visible = false;
+
+            Console.WriteLine($"Starting recursive rename for {assemblyDocumentNames.Count} assemblies with {fileNames.Count} file mappings");
+
+            foreach (var assemblyDocumentName in assemblyDocumentNames)
+            {
+                string assemblyFilePath = System.IO.Path.GetFullPath(assemblyDocumentName);
+                if (!System.IO.File.Exists(assemblyFilePath))
+                {
+                    Console.WriteLine($"Assembly file not found: {assemblyFilePath}");
+                    continue;
+                }
+
+                Console.WriteLine($"Processing assembly: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                AssemblyDocument? asmDoc = null;
+                try
+                {
+                    asmDoc = (AssemblyDocument)inventorApp.Documents.Open(assemblyFilePath, true);
+                    var docDescriptors = asmDoc.ReferencedDocumentDescriptors;
+                    Console.WriteLine($"Found {docDescriptors.Count} referenced documents");
+
+                    foreach (DocumentDescriptor oDocDescriptor in docDescriptors)
+                    {
+                        try
+                        {
+                            string referencedPath = oDocDescriptor.FullDocumentName;
+                            if (!fileNames.TryGetValue(referencedPath, out var newFileName) || string.IsNullOrEmpty(newFileName))
+                                continue;
+
+                            string newFullName = System.IO.Path.GetFullPath(newFileName);
+                            Console.WriteLine($"Processing: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newFullName)}");
+
+                            if (!System.IO.File.Exists(newFullName))
+                            {
+                                // Get the referenced document to determine its type
+                                Document? referencedDoc = null;
+                                try
+                                {
+                                    referencedDoc = (Document)oDocDescriptor.ReferencedDocument;
+                                    if (referencedDoc == null)
+                                        continue;
+
+                                    if (referencedDoc is PartDocument)
+                                    {
+                                        PartDocument? partDoc = null;
+                                        try
+                                        {
+                                            Console.WriteLine($"Opening part document: {System.IO.Path.GetFileName(referencedPath)}");
+                                            partDoc = (PartDocument)inventorApp.Documents.Open(referencedPath, true);
+                                            pathToDelete.Add(referencedPath);
+                                            
+                                            Console.WriteLine($"Saving part as: {System.IO.Path.GetFileName(newFullName)}");
+                                            partDoc.SaveAs(newFullName, false);
+                                            
+                                            // Update part number property
+                                            try
+                                            {
+                                                var designProps = partDoc.PropertySets["Design Tracking Properties"];
+                                                designProps["Part Number"].Value = System.IO.Path.GetFileNameWithoutExtension(newFullName);
+                                                Console.WriteLine($"Updated part number to: {System.IO.Path.GetFileNameWithoutExtension(newFullName)}");
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not update part number: {ex.Message}");
+                                            }
+                                            
+                                            // Change material if Generic
+                                            try
+                                            {
+                                                var mat = partDoc.ComponentDefinition.Material;
+                                                if (mat.Name == "Generic")
+                                                {
+                                                    // Optionally set to a default material, e.g., "Steel"
+                                                    partDoc.ComponentDefinition.Material = partDoc.Materials["Steel"];
+                                                    Console.WriteLine("Changed material from Generic to Steel");
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not change material: {ex.Message}");
+                                            }
+                                            
+                                            partDoc.Update();
+                                            Console.WriteLine("Part document updated successfully");
+                                            
+                                            // Replace reference in parent
+                                            try
+                                            {
+                                                referencedDoc.Save();
+                                                Console.WriteLine("Referenced document saved successfully");
+                                            }
+                                            catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                            {
+                                                Console.WriteLine($"Warning: Could not save referenced document (E_FAIL): {comEx.Message}");
+                                                Console.WriteLine($"File: {referencedPath}");
+                                                // Continue processing - don't fail the entire operation
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not save referenced document: {ex.Message}");
+                                                Console.WriteLine($"File: {referencedPath}");
+                                                // Continue processing - don't fail the entire operation
+                                            }
+                                        }
+                                        catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                        {
+                                            Console.WriteLine($"COM Error (E_FAIL) processing part document: {comEx.Message}");
+                                            Console.WriteLine($"File: {referencedPath}");
+                                            throw;
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"Error processing part document: {ex.Message}");
+                                            Console.WriteLine($"File: {referencedPath}");
+                                            throw;
+                                        }
+                                        finally
+                                        {
+                                            if (partDoc != null)
+                                            {
+                                                try
+                                                {
+                                                    partDoc.Close(true);
+                                                    Marshal.ReleaseComObject(partDoc);
+                                                }
+                                                catch (Exception ex)
+                                                {
+                                                    Console.WriteLine($"Error closing part document: {ex.Message}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else if (referencedDoc is AssemblyDocument)
+                                    {
+                                        AssemblyDocument? subAsmDoc = null;
+                                        try
+                                        {
+                                            Console.WriteLine($"Opening subassembly document: {System.IO.Path.GetFileName(referencedPath)}");
+                                            subAsmDoc = (AssemblyDocument)inventorApp.Documents.Open(referencedPath, true);
+                                            pathToDelete.Add(referencedPath);
+                                            
+                                            Console.WriteLine($"Saving subassembly as: {System.IO.Path.GetFileName(newFullName)}");
+                                            subAsmDoc.SaveAs(newFullName, false);
+                                            
+                                            // Update assembly number property
+                                            try
+                                            {
+                                                var designProps = subAsmDoc.PropertySets["Design Tracking Properties"];
+                                                designProps["Part Number"].Value = System.IO.Path.GetFileNameWithoutExtension(newFullName);
+                                                Console.WriteLine($"Updated assembly number to: {System.IO.Path.GetFileNameWithoutExtension(newFullName)}");
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not update assembly number: {ex.Message}");
+                                            }
+                                            
+                                            // Enable & sort BOM (if needed)
+                                            try
+                                            {
+                                                var bom = subAsmDoc.ComponentDefinition.BOM;
+                                                bom.StructuredViewEnabled = true;
+                                                bom.StructuredViewFirstLevelOnly = false;
+                                                // Note: StructuredViewSortColumn might not be available in all Inventor versions
+                                                // bom.StructuredViewSortColumn = "Part Number";
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not configure BOM: {ex.Message}");
+                                            }
+                                            
+                                            subAsmDoc.Update();
+                                            Console.WriteLine("Subassembly document updated successfully");
+                                            
+                                            // Replace reference in parent
+                                            try
+                                            {
+                                                referencedDoc.Save();
+                                                Console.WriteLine("Referenced document saved successfully");
+                                            }
+                                            catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                            {
+                                                Console.WriteLine($"Warning: Could not save referenced document (E_FAIL): {comEx.Message}");
+                                                Console.WriteLine($"File: {referencedPath}");
+                                                // Continue processing - don't fail the entire operation
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine($"Warning: Could not save referenced document: {ex.Message}");
+                                                Console.WriteLine($"File: {referencedPath}");
+                                                // Continue processing - don't fail the entire operation
+                                            }
+                                        }
+                                        catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                        {
+                                            Console.WriteLine($"COM Error (E_FAIL) processing subassembly document: {comEx.Message}");
+                                            Console.WriteLine($"File: {referencedPath}");
+                                            throw;
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"Error processing subassembly document: {ex.Message}");
+                                            Console.WriteLine($"File: {referencedPath}");
+                                            throw;
+                                        }
+                                        finally
+                                        {
+                                            if (subAsmDoc != null)
+                                            {
+                                                try
+                                                {
+                                                    subAsmDoc.Close(true);
+                                                    Marshal.ReleaseComObject(subAsmDoc);
+                                                }
+                                                catch (Exception ex)
+                                                {
+                                                    Console.WriteLine($"Error closing subassembly document: {ex.Message}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                                {
+                                    Console.WriteLine($"COM Error (E_FAIL) accessing referenced document: {comEx.Message}");
+                                    Console.WriteLine($"File: {referencedPath}");
+                                    // Continue processing - don't fail the entire operation
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Error accessing referenced document: {ex.Message}");
+                                    Console.WriteLine($"File: {referencedPath}");
+                                    // Continue processing - don't fail the entire operation
+                                }
+                                finally
+                                {
+                                    if (referencedDoc != null)
+                                    {
+                                        Marshal.ReleaseComObject(referencedDoc);
+                                    }
+                                }
+                            }
+                            // Note: Reference replacement is now handled after the file processing block
+
+                            // CRITICAL FIX: Always replace the reference in the parent assembly, regardless of whether the file existed or not
+                            // This ensures that the component names in the browser tree are updated
+                            try
+                            {
+                                Console.WriteLine($"Updating reference in parent assembly: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newFullName)}");
+                                
+                                // Find and replace the occurrence in the parent assembly
+                                bool referenceUpdated = false;
+                                foreach (ComponentOccurrence occ in asmDoc.ComponentDefinition.Occurrences)
+                                {
+                                    try
+                                    {
+                                        string occRefPath = occ.ReferencedDocumentDescriptor.FullDocumentName;
+                                        if (occRefPath.Equals(referencedPath, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            Console.WriteLine($"Found matching occurrence: {occ.Name}, replacing reference...");
+                                            occ.Replace(newFullName, false);
+                                            referenceUpdated = true;
+                                            Console.WriteLine($"Successfully replaced reference for occurrence: {occ.Name}");
+                                            break;
+                                        }
+                                    }
+                                    catch (Exception occEx)
+                                    {
+                                        Console.WriteLine($"Warning: Error checking occurrence {occ.Name}: {occEx.Message}");
+                                        continue;
+                                    }
+                                }
+
+                                if (!referenceUpdated)
+                                {
+                                    Console.WriteLine($"Warning: Could not find occurrence to replace for: {System.IO.Path.GetFileName(referencedPath)}");
+                                }
+                            }
+                            catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                            {
+                                Console.WriteLine($"Warning: E_FAIL error updating reference: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newFullName)}: {comEx.Message}");
+                                // Continue processing - don't fail the entire operation
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error updating reference: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newFullName)}: {ex.Message}");
+                                // Continue processing - don't fail the entire operation
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error processing document descriptor: {ex.Message}");
+                            // Continue processing - don't fail the entire operation
+                        }
+                    }
+                    
+                    // After all descriptors processed
+                    try
+                    {
+                        var bom = asmDoc.ComponentDefinition.BOM;
+                        bom.StructuredViewEnabled = true;
+                        // Note: StructuredViewSortColumn might not be available in all Inventor versions
+                        // bom.StructuredViewSortColumn = "Part Number";
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not configure BOM: {ex.Message}");
+                    }
+                    
+                    // Force update and save the assembly to ensure all reference changes are applied
+                    try
+                    {
+                        Console.WriteLine($"Forcing update and save of assembly: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                        asmDoc.Update();
+                        Thread.Sleep(1000); // Give Inventor time to process the update
+                        asmDoc.Save2(true); // Save with Yes to All, suppress dialogs
+                        Thread.Sleep(1000); // Give Inventor time to save
+                        Console.WriteLine($"Assembly updated and saved successfully: {System.IO.Path.GetFileName(assemblyFilePath)}");
+                    }
+                    catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                    {
+                        Console.WriteLine($"Warning: E_FAIL error saving assembly: {comEx.Message}");
+                        // Try to save without the update
+                        try
+                        {
+                            asmDoc.Save2(true);
+                            Console.WriteLine($"Assembly saved successfully (without update): {System.IO.Path.GetFileName(assemblyFilePath)}");
+                        }
+                        catch (Exception saveEx)
+                        {
+                            Console.WriteLine($"Error saving assembly: {saveEx.Message}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error updating/saving assembly: {ex.Message}");
+                    }
+                }
+                catch (System.Runtime.InteropServices.COMException comEx) when ((uint)comEx.ErrorCode == 0x80004005)
+                {
+                    Console.WriteLine($"COM Error (E_FAIL) processing assembly: {comEx.Message}");
+                    Console.WriteLine($"File: {assemblyFilePath}");
+                    // Continue processing - don't fail the entire operation
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error processing assembly: {ex.Message}");
+                    Console.WriteLine($"File: {assemblyFilePath}");
+                    // Continue processing - don't fail the entire operation
+                }
+                finally
+                {
+                    if (asmDoc != null)
+                    {
+                        try
+                        {
+                            asmDoc.Close(true);
+                            Marshal.ReleaseComObject(asmDoc);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error closing assembly document: {ex.Message}");
+                        }
+                    }
+                }
+            }
+            return pathToDelete;
+        }
+
+        /// <summary>
+        /// Recursively renames assemblies and parts using a prefix, automatically discovering files and generating rename mappings.
+        /// </summary>
+        public List<string> RenameAssemblyRecursivelyWithPrefix(string modelPath, string prefix)
+        {
+            var pathToDelete = new List<string>();
+            var inventorApp = GetInventorApplication();
+            inventorApp.SilentOperation = true;
+            inventorApp.Visible = false;
+
+            try
+            {
+                Console.WriteLine($"=== Starting Recursive Rename with Prefix ===");
+                Console.WriteLine($"Model Path: {modelPath}");
+                Console.WriteLine($"Prefix: {prefix}");
+
+                // Discover all assembly files in the model path
+                var assemblyFiles = DiscoverAssemblyFiles(modelPath);
+                if (assemblyFiles.Count == 0)
+                {
+                    Console.WriteLine("No assembly files found in the specified path.");
+                    return pathToDelete;
+                }
+
+                Console.WriteLine($"Found {assemblyFiles.Count} assembly files to process.");
+
+                // Build rename mappings based on part numbers and prefix
+                var fileNames = new Dictionary<string, string>();
+                var usedNames = new HashSet<string>();
+
+                foreach (var assemblyFile in assemblyFiles)
+                {
+                    string assemblyFilePath = System.IO.Path.Combine(modelPath, assemblyFile);
+                    if (!System.IO.File.Exists(assemblyFilePath))
+                    {
+                        Console.WriteLine($"Assembly file not found: {assemblyFilePath}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"Processing assembly: {assemblyFile}");
+                    AssemblyDocument? asmDoc = null;
+                    try
+                    {
+                        asmDoc = (AssemblyDocument)inventorApp.Documents.Open(assemblyFilePath, true);
+                        var docDescriptors = asmDoc.ReferencedDocumentDescriptors;
+                        Console.WriteLine($"Found {docDescriptors.Count} referenced documents in {assemblyFile}");
+
+                        foreach (DocumentDescriptor oDocDescriptor in docDescriptors)
+                        {
+                            try
+                            {
+                                string referencedPath = oDocDescriptor.FullDocumentName;
+                                if (IsContentCenterFile(referencedPath))
+                                {
+                                    Console.WriteLine($"Skipping Content Center file: {System.IO.Path.GetFileName(referencedPath)}");
+                                    continue;
+                                }
+
+                                string fileName = System.IO.Path.GetFileNameWithoutExtension(referencedPath);
+                                string fileExt = System.IO.Path.GetExtension(referencedPath);
+                                string dir = System.IO.Path.GetDirectoryName(referencedPath)!;
+
+                                // Check if it should be renamed based on part number
+                                if (!ShouldRenameByPartNumber(oDocDescriptor, prefix))
+                                {
+                                    Console.WriteLine($"Skipping file (doesn't need rename): {fileName}");
+                                    continue;
+                                }
+
+                                // Skip if already starts with new prefix
+                                if (fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Console.WriteLine($"Skipping file (already has correct prefix): {fileName}");
+                                    continue;
+                                }
+
+                                // Generate new name with conflict resolution
+                                string newFileName = GenerateUniqueFileName(fileName, prefix, fileExt, dir, usedNames);
+                                string newPath = System.IO.Path.Combine(dir, newFileName);
+
+                                if (!fileNames.ContainsKey(referencedPath))
+                                {
+                                    fileNames.Add(referencedPath, newPath);
+                                    usedNames.Add(newFileName);
+                                    Console.WriteLine($"Added to rename list: {fileName} -> {newFileName}");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error processing document descriptor: {ex.Message}");
+                            }
+                        }
+
+                        // Handle main assembly renaming
+                        string mainFileName = System.IO.Path.GetFileNameWithoutExtension(assemblyFilePath);
+                        if (ShouldRenameAssemblyByPartNumber(asmDoc, prefix) && !mainFileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            string mainExt = System.IO.Path.GetExtension(assemblyFilePath);
+                            string newMainFileName = GenerateUniqueFileName(mainFileName, prefix, mainExt, modelPath, usedNames);
+                            string mainNewPath = System.IO.Path.Combine(modelPath, newMainFileName);
+
+                            if (!fileNames.ContainsKey(assemblyFilePath))
+                            {
+                                fileNames.Add(assemblyFilePath, mainNewPath);
+                                usedNames.Add(newMainFileName);
+                                Console.WriteLine($"Added main assembly to rename list: {mainFileName} -> {newMainFileName}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error processing assembly {assemblyFile}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (asmDoc != null)
+                        {
+                            try
+                            {
+                                asmDoc.Close(false);
+                                Marshal.ReleaseComObject(asmDoc);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error closing assembly document: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+
+                if (fileNames.Count == 0)
+                {
+                    Console.WriteLine("No files found that need renaming.");
+                    return pathToDelete;
+                }
+
+                Console.WriteLine($"Found {fileNames.Count} files to rename.");
+
+                // Call the recursive rename method
+                try
+                {
+                    Console.WriteLine("=== Starting Recursive Rename Operation ===");
+                    pathToDelete = RenameAssemblyRecursively(assemblyFiles.Select(f => System.IO.Path.Combine(modelPath, f)).ToList(), fileNames);
+                    Console.WriteLine($"Recursive rename completed. {pathToDelete.Count} files can be deleted.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error during recursive rename operation: {ex.Message}");
+                    Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during recursive rename with prefix: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                throw;
+            }
+            finally
+            {
+                try
+                {
+                    CleanupInventorApp();
+                    GC.Collect();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error during cleanup: {ex.Message}");
+                }
+            }
+
+            return pathToDelete;
+        }
+
+        /// <summary>
+        /// Determines if a file should be renamed based on part number prefix matching from the document descriptor.
+        /// </summary>
+        private bool ShouldRenameByPartNumber(DocumentDescriptor docDescriptor, string partPrefix)
+        {
+            try
+            {
+                Document? referencedDoc = (Document)docDescriptor.ReferencedDocument;
+                if (referencedDoc == null)
+                    return false;
+
+                string partNumber = "";
+
+                // Get the part number from iProperties
+                if (referencedDoc is PartDocument partDoc)
+                {
+                    partNumber = partDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+                }
+                else if (referencedDoc is AssemblyDocument asmDoc)
+                {
+                    partNumber = asmDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+                }
+
+                if (string.IsNullOrWhiteSpace(partNumber))
+                    return false;
+
+                // Extract the first part before underscore or dash from part number
+                string[] parts = partNumber.Split(new char[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length == 0)
+                    return false;
+
+                string firstPart = parts[0].Trim();
+
+                // Check if the first part matches the part prefix
+                return string.Equals(firstPart, partPrefix, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reading part number from document descriptor: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Determines if a main assembly should be renamed based on part number prefix matching.
+        /// </summary>
+        private bool ShouldRenameAssemblyByPartNumber(AssemblyDocument asmDoc, string partPrefix)
+        {
+            try
+            {
+                string partNumber = asmDoc.PropertySets["Design Tracking Properties"]["Part Number"].Value?.ToString() ?? "";
+
+                if (string.IsNullOrWhiteSpace(partNumber))
+                    return false;
+
+                // Extract the first part before underscore or dash from part number
+                string[] parts = partNumber.Split(new char[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length == 0)
+                    return false;
+
+                string firstPart = parts[0].Trim();
+
+                // Check if the first part matches the part prefix
+                return string.Equals(firstPart, partPrefix, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reading part number from assembly: {ex.Message}");
+                return false;
             }
         }
     }

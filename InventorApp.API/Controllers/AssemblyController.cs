@@ -299,6 +299,77 @@ namespace InventorAPI.Controllers
                 return StatusCode(500, response);
             }
         }
+
+        [HttpPost("design-assist-recursive-rename")]
+        public IActionResult DesignAssistRecursiveRename([FromBody] RecursiveRenameRequest request)
+        {
+            if (request == null || request.AssemblyDocumentNames == null || request.AssemblyDocumentNames.Count == 0 || request.FileNames == null || request.FileNames.Count == 0)
+            {
+                return BadRequest(new { message = "assemblyDocumentNames and fileNames are required." });
+            }
+            try
+            {
+                var result = _assemblyService.RenameAssemblyRecursively(request.AssemblyDocumentNames, request.FileNames);
+                return Ok(new { message = "Recursive rename completed.", filesToDelete = result });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error during recursive rename: {ex.Message}" });
+            }
+        }
+
+        [HttpPost("design-assist-recursive-rename-with-prefix")]
+        public IActionResult DesignAssistRecursiveRenameWithPrefix([FromBody] RecursiveRenameWithPrefixRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.ModelPath))
+                return BadRequest(new { message = "modelPath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.Prefix))
+                return BadRequest(new { message = "prefix is required." });
+
+            // Validate path format
+            try
+            {
+                var fullPath = Path.GetFullPath(request.ModelPath);
+                if (!Directory.Exists(fullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Directory not found: {fullPath}",
+                        providedPath = request.ModelPath,
+                        resolvedPath = fullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    providedPath = request.ModelPath
+                });
+            }
+
+            try
+            {
+                var result = _assemblyService.RenameAssemblyRecursivelyWithPrefix(request.ModelPath, request.Prefix);
+                return Ok(new { message = "Recursive rename with prefix completed.", filesToDelete = result });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error during recursive rename with prefix: {ex.Message}" });
+            }
+        }
+
+        public class RecursiveRenameRequest
+        {
+            public List<string> AssemblyDocumentNames { get; set; } = new();
+            public Dictionary<string, string> FileNames { get; set; } = new();
+        }
+
+        public class RecursiveRenameWithPrefixRequest
+        {
+            public string ModelPath { get; set; } = "";
+            public string Prefix { get; set; } = "";
+        }
     }
 
     public class AssemblyRequest { public string AssemblyPath { get; set; } = "C:\\path\\to\\your\\assembly.iam"; }
