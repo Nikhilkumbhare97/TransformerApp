@@ -350,12 +350,121 @@ namespace InventorAPI.Controllers
 
             try
             {
-                var result = _assemblyService.RenameAssemblyRecursivelyWithPrefix(request.ModelPath, request.Prefix);
-                return Ok(new { message = "Recursive rename with prefix completed.", filesToDelete = result });
+                // Step 1: Perform the recursive rename
+                var filesToDelete = _assemblyService.RenameAssemblyRecursivelyWithPrefix(request.ModelPath, request.Prefix);
+                
+                // Step 2: If rename was successful and there are files to delete, call the delete API
+                if (filesToDelete != null && filesToDelete.Count > 0)
+                {
+                    var deleteResult = _assemblyService.DeleteFiles(filesToDelete);
+                    return Ok(new { 
+                        message = "Recursive rename with prefix completed and old files cleaned up.", 
+                        filesToDelete = filesToDelete,
+                        deleteResult = deleteResult
+                    });
+                }
+                else
+                {
+                    return Ok(new { 
+                        message = "Recursive rename with prefix completed. No files to delete.", 
+                        filesToDelete = filesToDelete
+                    });
+                }
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = $"Error during recursive rename with prefix: {ex.Message}" });
+            }
+        }
+
+
+
+        [HttpPost("delete-files")]
+        public IActionResult DeleteFiles([FromBody] DeleteFilesRequest request)
+        {
+            if (request.FilePaths == null || request.FilePaths.Count == 0)
+            {
+                return BadRequest(new { message = "filePaths is required and cannot be empty." });
+            }
+
+            try
+            {
+                var result = _assemblyService.DeleteFiles(request.FilePaths);
+                return Ok(new { 
+                    message = "File deletion completed.", 
+                    result = result 
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error during file deletion: {ex.Message}" });
+            }
+        }
+
+        [HttpPost("update-drawing-references")]
+        public IActionResult UpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingsPath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.ModelPath))
+                return BadRequest(new { message = "modelPath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.OldPrefix))
+                return BadRequest(new { message = "oldPrefix is required." });
+
+            if (string.IsNullOrWhiteSpace(request.NewPrefix))
+                return BadRequest(new { message = "newPrefix is required." });
+
+            // Validate paths
+            try
+            {
+                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
+                var modelFullPath = Path.GetFullPath(request.ModelPath);
+                
+                if (!Directory.Exists(drawingsFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Drawings directory not found: {drawingsFullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = drawingsFullPath
+                    });
+
+                if (!Directory.Exists(modelFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Model directory not found: {modelFullPath}",
+                        providedPath = request.ModelPath,
+                        resolvedPath = modelFullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    drawingsPath = request.DrawingsPath,
+                    modelPath = request.ModelPath
+                });
+            }
+
+            try
+            {
+                var result = _assemblyService.UpdateDrawingReferences(request.DrawingsPath, request.ModelPath, request.ProjectPath, request.OldPrefix, request.NewPrefix);
+                return Ok(new { 
+                    message = "Drawing and project references updated and files renamed successfully.", 
+                    processedDrawings = result.ProcessedDrawings,
+                    updatedReferences = result.UpdatedReferences,
+                    failedDrawings = result.FailedDrawings,
+                    renamedDrawings = result.RenamedDrawings,
+                    failedRenames = result.FailedRenames,
+                    renamedProjects = result.RenamedProjects,
+                    failedProjectRenames = result.FailedProjectRenames
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error updating drawing references: {ex.Message}" });
             }
         }
 
@@ -369,6 +478,22 @@ namespace InventorAPI.Controllers
         {
             public string ModelPath { get; set; } = "";
             public string Prefix { get; set; } = "";
+        }
+
+        public class UpdateDrawingReferencesRequest
+        {
+            public string DrawingsPath { get; set; } = "";
+            public string ModelPath { get; set; } = "";
+            public string ProjectPath { get; set; } = "";
+            public string OldPrefix { get; set; } = "";
+            public string NewPrefix { get; set; } = "";
+        }
+
+        public class DeleteFilesRequest
+        {
+            [JsonPropertyName("filePaths")]
+            [Required(ErrorMessage = "filePaths is required")]
+            public List<string> FilePaths { get; set; } = new();
         }
     }
 
