@@ -401,33 +401,42 @@ namespace InventorAPI.Controllers
             }
         }
 
-        [HttpPost("update-drawing-references")]
-        public IActionResult UpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
+        [HttpPost("design-assist-update-drawing-references")]
+        public IActionResult DesignAssistUpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.DrawingsPath))
-                return BadRequest(new { message = "drawingsPath is required." });
+                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
 
             if (string.IsNullOrWhiteSpace(request.ModelPath))
-                return BadRequest(new { message = "modelPath is required." });
+                return BadRequest(new { message = "modelPath is required and cannot be empty or whitespace." });
 
             if (string.IsNullOrWhiteSpace(request.OldPrefix))
-                return BadRequest(new { message = "oldPrefix is required." });
+                return BadRequest(new { message = "oldPrefix is required and cannot be empty or whitespace." });
 
             if (string.IsNullOrWhiteSpace(request.NewPrefix))
-                return BadRequest(new { message = "newPrefix is required." });
+                return BadRequest(new { message = "newPrefix is required and cannot be empty or whitespace." });
+
+            // Validate prefix format
+            if (!System.Text.RegularExpressions.Regex.IsMatch(request.OldPrefix, @"^[A-Za-z0-9_-]+$"))
+                return BadRequest(new { message = "oldPrefix can only contain letters, numbers, underscores, and hyphens." });
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(request.NewPrefix, @"^[A-Za-z0-9_-]+$"))
+                return BadRequest(new { message = "newPrefix can only contain letters, numbers, underscores, and hyphens." });
 
             // Validate paths
             try
             {
                 var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
                 var modelFullPath = Path.GetFullPath(request.ModelPath);
+                var projectFullPath = !string.IsNullOrWhiteSpace(request.ProjectPath) ? Path.GetFullPath(request.ProjectPath) : null;
                 
                 if (!Directory.Exists(drawingsFullPath))
                     return BadRequest(new
                     {
                         message = $"Drawings directory not found: {drawingsFullPath}",
                         providedPath = request.DrawingsPath,
-                        resolvedPath = drawingsFullPath
+                        resolvedPath = drawingsFullPath,
+                        validation = "directory_not_found"
                     });
 
                 if (!Directory.Exists(modelFullPath))
@@ -435,8 +444,149 @@ namespace InventorAPI.Controllers
                     {
                         message = $"Model directory not found: {modelFullPath}",
                         providedPath = request.ModelPath,
-                        resolvedPath = modelFullPath
+                        resolvedPath = modelFullPath,
+                        validation = "directory_not_found"
                     });
+
+                if (projectFullPath != null && !Directory.Exists(projectFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Project directory not found: {projectFullPath}",
+                        providedPath = request.ProjectPath,
+                        resolvedPath = projectFullPath,
+                        validation = "directory_not_found"
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = $"Path validation error: {ex.Message}" });
+            }
+
+            try
+            {
+                var result = _assemblyService.DesignAssistUpdateReferences(
+                    request.DrawingsPath,
+                    request.ModelPath,
+                    request.ProjectPath,
+                    request.OldPrefix,
+                    request.NewPrefix
+                );
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Design assist drawing references update completed successfully",
+                    result = result,
+                    summary = new
+                    {
+                        processedDrawings = result.ProcessedDrawings.Count,
+                        updatedReferences = result.UpdatedReferences.Count,
+                        failedDrawings = result.FailedDrawings.Count,
+                        renamedDrawings = result.RenamedDrawings.Count,
+                        failedRenames = result.FailedRenames.Count,
+                        renamedProjects = result.RenamedProjects.Count,
+                        failedProjectRenames = result.FailedProjectRenames.Count
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An error occurred while updating drawing references",
+                    error = ex.Message,
+                    details = ex.ToString()
+                });
+            }
+        }
+
+        [HttpPost("update-drawing-references")]
+        public IActionResult UpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
+        {
+            // Enhanced validation with detailed error messages
+            if (request == null)
+                return BadRequest(new { message = "Request body is required and cannot be null." });
+
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
+
+            if (string.IsNullOrWhiteSpace(request.ModelPath))
+                return BadRequest(new { message = "modelPath is required and cannot be empty or whitespace." });
+
+            if (string.IsNullOrWhiteSpace(request.OldPrefix))
+                return BadRequest(new { message = "oldPrefix is required and cannot be empty or whitespace." });
+
+            if (string.IsNullOrWhiteSpace(request.NewPrefix))
+                return BadRequest(new { message = "newPrefix is required and cannot be empty or whitespace." });
+
+            // Validate prefix format
+            if (!System.Text.RegularExpressions.Regex.IsMatch(request.OldPrefix, @"^[A-Za-z0-9_-]+$"))
+                return BadRequest(new { message = "oldPrefix can only contain letters, numbers, underscores, and hyphens." });
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(request.NewPrefix, @"^[A-Za-z0-9_-]+$"))
+                return BadRequest(new { message = "newPrefix can only contain letters, numbers, underscores, and hyphens." });
+
+            // Validate paths
+            try
+            {
+                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
+                var modelFullPath = Path.GetFullPath(request.ModelPath);
+                var projectFullPath = !string.IsNullOrWhiteSpace(request.ProjectPath) ? Path.GetFullPath(request.ProjectPath) : null;
+                
+                if (!Directory.Exists(drawingsFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Drawings directory not found: {drawingsFullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = drawingsFullPath,
+                        validation = "directory_not_found"
+                    });
+
+                if (!Directory.Exists(modelFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Model directory not found: {modelFullPath}",
+                        providedPath = request.ModelPath,
+                        resolvedPath = modelFullPath,
+                        validation = "directory_not_found"
+                    });
+
+                if (projectFullPath != null && !Directory.Exists(projectFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Project directory not found: {projectFullPath}",
+                        providedPath = request.ProjectPath,
+                        resolvedPath = projectFullPath,
+                        validation = "directory_not_found"
+                    });
+
+                // Check if directories are accessible
+                try
+                {
+                    Directory.GetFiles(drawingsFullPath, "*", SearchOption.TopDirectoryOnly);
+                    Directory.GetFiles(modelFullPath, "*", SearchOption.TopDirectoryOnly);
+                    if (projectFullPath != null)
+                    {
+                        Directory.GetFiles(projectFullPath, "*", SearchOption.TopDirectoryOnly);
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Access denied to one or more directories. Please ensure the application has read/write permissions.",
+                        validation = "access_denied"
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Error accessing directories: {ex.Message}",
+                        validation = "access_error"
+                    });
+                }
             }
             catch (Exception ex)
             {
@@ -444,27 +594,70 @@ namespace InventorAPI.Controllers
                 {
                     message = $"Invalid path format: {ex.Message}",
                     drawingsPath = request.DrawingsPath,
-                    modelPath = request.ModelPath
+                    modelPath = request.ModelPath,
+                    projectPath = request.ProjectPath,
+                    validation = "path_format_error"
                 });
             }
 
             try
             {
+                Console.WriteLine($"=== Starting Drawing References Update API Call ===");
+                Console.WriteLine($"Request: DrawingsPath={request.DrawingsPath}, ModelPath={request.ModelPath}, ProjectPath={request.ProjectPath}");
+                Console.WriteLine($"Prefix Change: {request.OldPrefix} -> {request.NewPrefix}");
+
                 var result = _assemblyService.UpdateDrawingReferences(request.DrawingsPath, request.ModelPath, request.ProjectPath, request.OldPrefix, request.NewPrefix);
-                return Ok(new { 
-                    message = "Drawing and project references updated and files renamed successfully.", 
-                    processedDrawings = result.ProcessedDrawings,
-                    updatedReferences = result.UpdatedReferences,
-                    failedDrawings = result.FailedDrawings,
-                    renamedDrawings = result.RenamedDrawings,
-                    failedRenames = result.FailedRenames,
-                    renamedProjects = result.RenamedProjects,
-                    failedProjectRenames = result.FailedProjectRenames
-                });
+                
+                // Calculate success metrics
+                var totalOperations = result.ProcessedDrawings.Count + result.RenamedDrawings.Count + result.RenamedProjects.Count;
+                var totalErrors = result.FailedDrawings.Count + result.FailedRenames.Count + result.FailedProjectRenames.Count;
+                var successRate = totalOperations > 0 ? (double)(totalOperations - totalErrors) / totalOperations * 100 : 0;
+
+                var response = new
+                {
+                    message = "Drawing and project references update completed.",
+                    success = totalErrors == 0,
+                    successRate = Math.Round(successRate, 1),
+                    timestamp = DateTime.UtcNow,
+                    summary = new
+                    {
+                        processedDrawings = result.ProcessedDrawings.Count,
+                        updatedReferences = result.UpdatedReferences.Count,
+                        failedDrawings = result.FailedDrawings.Count,
+                        renamedDrawings = result.RenamedDrawings.Count,
+                        failedRenames = result.FailedRenames.Count,
+                        renamedProjects = result.RenamedProjects.Count,
+                        failedProjectRenames = result.FailedProjectRenames.Count
+                    },
+                    details = new
+                    {
+                        processedDrawings = result.ProcessedDrawings,
+                        updatedReferences = result.UpdatedReferences,
+                        failedDrawings = result.FailedDrawings,
+                        renamedDrawings = result.RenamedDrawings,
+                        failedRenames = result.FailedRenames,
+                        renamedProjects = result.RenamedProjects,
+                        failedProjectRenames = result.FailedProjectRenames
+                    }
+                };
+
+                Console.WriteLine($"=== Drawing References Update API Call Completed ===");
+                Console.WriteLine($"Success Rate: {successRate:F1}%");
+                Console.WriteLine($"Total Operations: {totalOperations}, Errors: {totalErrors}");
+
+                return Ok(response);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = $"Error updating drawing references: {ex.Message}" });
+                Console.WriteLine($"=== Drawing References Update API Call Failed ===");
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
+
+                return StatusCode(500, new { 
+                    message = $"Error updating drawing references: {ex.Message}",
+                    errorType = ex.GetType().Name,
+                    timestamp = DateTime.UtcNow
+                });
             }
         }
 
