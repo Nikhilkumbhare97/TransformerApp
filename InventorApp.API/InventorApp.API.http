@@ -4,3 +4,21 @@ GET {{InventorApp.API_HostAddress}}/weatherforecast/
 Accept: application/json
 
 ###
+
+POST {{InventorApp.API_HostAddress}}/api/inventor/update-drawing-references
+Content-Type: application/json
+
+{
+  "drawingsPath": "C:\\path\\to\\drawings",
+  "modelPath": "C:\\path\\to\\models",
+  "projectPath": "C:\\path\\to\\project",
+  "oldPrefix": "ABC099001",
+  "newPrefix": "Test1232"
+}
+
+# This endpoint now handles:
+# - Drawing files (.idw, .dwg) - renames files and updates internal references
+# - Project files (.ipj) - renames files on the file system (from projectPath)
+# - Updates assembly references within drawing files to match renamed assemblies
+# - Enhanced reference update with multiple fallback methods
+# - Provides detailed manual update instructions when automatic updates fail
