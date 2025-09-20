@@ -113,210 +113,6 @@ namespace InventorAPI.Controllers
                 : StatusCode(500, "Failed to update model states and representations.");
         }
 
-        [HttpPost("design-assist-rename")]
-        public IActionResult DesignAssistRename([FromBody] DesignAssistRenameRequest request)
-        {
-            // Enhanced validation with more specific error messages
-            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
-                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.PartPrefix))
-                return BadRequest(new { message = "partPrefix is required and cannot be empty or whitespace." });
-
-            // Validate path format
-            try
-            {
-                var fullPath = Path.GetFullPath(request.DrawingsPath);
-                if (!Directory.Exists(fullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Directory not found: {fullPath}",
-                        providedPath = request.DrawingsPath,
-                        resolvedPath = fullPath
-                    });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    message = $"Invalid path format: {ex.Message}",
-                    providedPath = request.DrawingsPath
-                });
-            }
-
-            try
-            {
-                // Log the operation start
-                Console.WriteLine($"=== Design Assistant Rename Operation Started ===");
-                Console.WriteLine($"Path: {request.DrawingsPath}");
-                Console.WriteLine($"Prefix: {request.PartPrefix}");
-                Console.WriteLine($"Assembly List Provided: {request.AssemblyList?.Count ?? 0} assemblies");
-
-                // Pass the assemblyList (can be null/empty for auto-discovery)
-                bool result = _assemblyService.DesignAssistRename(
-                    request.DrawingsPath,
-                    request.PartPrefix,
-                    request.AssemblyList?.Count > 0 ? request.AssemblyList : null
-                );
-
-                if (result)
-                {
-                    var response = new
-                    {
-                        message = "Design Assistant renaming completed successfully.",
-                        processedPath = request.DrawingsPath,
-                        prefix = request.PartPrefix,
-                        autoDiscovered = request.AssemblyList?.Count == 0,
-                        timestamp = DateTime.UtcNow,
-                        status = "success"
-                    };
-
-                    Console.WriteLine($"=== Design Assistant Rename Operation Completed Successfully ===");
-                    return Ok(response);
-                }
-                else
-                {
-                    var response = new
-                    {
-                        message = "Design Assistant renaming failed. Check the application logs for details.",
-                        processedPath = request.DrawingsPath,
-                        prefix = request.PartPrefix,
-                        autoDiscovered = request.AssemblyList?.Count == 0,
-                        timestamp = DateTime.UtcNow,
-                        status = "failed"
-                    };
-
-                    Console.WriteLine($"=== Design Assistant Rename Operation Failed ===");
-                    return StatusCode(500, response);
-                }
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                var response = new
-                {
-                    message = $"Access denied to directory: {ex.Message}",
-                    processedPath = request.DrawingsPath,
-                    prefix = request.PartPrefix,
-                    timestamp = DateTime.UtcNow,
-                    status = "access_denied"
-                };
-                return StatusCode(403, response);
-            }
-            catch (Exception ex)
-            {
-                var response = new
-                {
-                    message = $"An unexpected error occurred: {ex.Message}",
-                    processedPath = request.DrawingsPath,
-                    prefix = request.PartPrefix,
-                    timestamp = DateTime.UtcNow,
-                    status = "error",
-                    errorType = ex.GetType().Name
-                };
-                return StatusCode(500, response);
-            }
-        }
-
-        /// <summary>
-        /// Analyzes what files would be renamed without performing the actual rename operation
-        /// </summary>
-        [HttpPost("design-assist-analyze")]
-        public IActionResult DesignAssistAnalyze([FromBody] DesignAssistRenameRequest request)
-        {
-            // Enhanced validation with more specific error messages
-            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
-                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.PartPrefix))
-                return BadRequest(new { message = "partPrefix is required and cannot be empty or whitespace." });
-
-            // Validate path format
-            try
-            {
-                var fullPath = Path.GetFullPath(request.DrawingsPath);
-                if (!Directory.Exists(fullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Directory not found: {fullPath}",
-                        providedPath = request.DrawingsPath,
-                        resolvedPath = fullPath
-                    });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    message = $"Invalid path format: {ex.Message}",
-                    providedPath = request.DrawingsPath
-                });
-            }
-
-            try
-            {
-                // Analyze what would be renamed without actually doing it
-                var analysis = _assemblyService.AnalyzeDesignAssistRename(
-                    request.DrawingsPath,
-                    request.PartPrefix,
-                    request.AssemblyList?.Count > 0 ? request.AssemblyList : null
-                );
-
-                var response = new
-                {
-                    message = "Analysis completed successfully.",
-                    processedPath = request.DrawingsPath,
-                    prefix = request.PartPrefix,
-                    autoDiscovered = request.AssemblyList?.Count == 0,
-                    timestamp = DateTime.UtcNow,
-                    status = "analysis_complete",
-                    analysis = analysis
-                };
-
-                return Ok(response);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                var response = new
-                {
-                    message = $"Access denied to directory: {ex.Message}",
-                    processedPath = request.DrawingsPath,
-                    prefix = request.PartPrefix,
-                    timestamp = DateTime.UtcNow,
-                    status = "access_denied"
-                };
-                return StatusCode(403, response);
-            }
-            catch (Exception ex)
-            {
-                var response = new
-                {
-                    message = $"An unexpected error occurred: {ex.Message}",
-                    processedPath = request.DrawingsPath,
-                    prefix = request.PartPrefix,
-                    timestamp = DateTime.UtcNow,
-                    status = "error",
-                    errorType = ex.GetType().Name
-                };
-                return StatusCode(500, response);
-            }
-        }
-
-        [HttpPost("design-assist-recursive-rename")]
-        public IActionResult DesignAssistRecursiveRename([FromBody] RecursiveRenameRequest request)
-        {
-            if (request == null || request.AssemblyDocumentNames == null || request.AssemblyDocumentNames.Count == 0 || request.FileNames == null || request.FileNames.Count == 0)
-            {
-                return BadRequest(new { message = "assemblyDocumentNames and fileNames are required." });
-            }
-            try
-            {
-                var result = _assemblyService.RenameAssemblyRecursively(request.AssemblyDocumentNames, request.FileNames);
-                return Ok(new { message = "Recursive rename completed.", filesToDelete = result });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { message = $"Error during recursive rename: {ex.Message}" });
-            }
-        }
 
         [HttpPost("design-assist-recursive-rename-with-prefix")]
         public IActionResult DesignAssistRecursiveRenameWithPrefix([FromBody] RecursiveRenameWithPrefixRequest request)
@@ -352,21 +148,23 @@ namespace InventorAPI.Controllers
             {
                 // Step 1: Perform the recursive rename
                 var filesToDelete = _assemblyService.RenameAssemblyRecursivelyWithPrefix(request.ModelPath, request.Prefix);
-                
+
                 // Step 2: If rename was successful and there are files to delete, call the delete API
                 if (filesToDelete != null && filesToDelete.Count > 0)
                 {
                     var deleteResult = _assemblyService.DeleteFiles(filesToDelete);
-                    return Ok(new { 
-                        message = "Recursive rename with prefix completed and old files cleaned up.", 
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix completed and old files cleaned up.",
                         filesToDelete = filesToDelete,
                         deleteResult = deleteResult
                     });
                 }
                 else
                 {
-                    return Ok(new { 
-                        message = "Recursive rename with prefix completed. No files to delete.", 
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix completed. No files to delete.",
                         filesToDelete = filesToDelete
                     });
                 }
@@ -377,7 +175,88 @@ namespace InventorAPI.Controllers
             }
         }
 
+        [HttpPost("design-assist-recursive-rename-with-prefix-and-drawings")]
+        public IActionResult DesignAssistRecursiveRenameWithPrefixAndDrawings([FromBody] RecursiveRenameWithPrefixAndDrawingsRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.ModelPath))
+                return BadRequest(new { message = "modelPath is required." });
 
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingspath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.OldPrefix))
+                return BadRequest(new { message = "oldPrefix is required." });
+
+            if (string.IsNullOrWhiteSpace(request.NewPrefix))
+                return BadRequest(new { message = "newPrefix is required." });
+
+            // Validate path formats
+            try
+            {
+                var modelFullPath = Path.GetFullPath(request.ModelPath);
+                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
+
+                if (!Directory.Exists(modelFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Model directory not found: {modelFullPath}",
+                        providedPath = request.ModelPath,
+                        resolvedPath = modelFullPath
+                    });
+
+                if (!Directory.Exists(drawingsFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Drawings directory not found: {drawingsFullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = drawingsFullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    modelPath = request.ModelPath,
+                    drawingsPath = request.DrawingsPath
+                });
+            }
+
+            try
+            {
+                // Perform the enhanced recursive rename with drawing updates
+                var result = _assemblyService.RenameAssemblyRecursivelyWithPrefixAndUpdateDrawings(
+                    request.ModelPath,
+                    request.DrawingsPath,
+                    request.ProjectPath,
+                    request.OldPrefix,
+                    request.NewPrefix);
+
+                // Step 2: If rename was successful and there are files to delete, call the delete API
+                if (result.FilesToDelete != null && result.FilesToDelete.Count > 0)
+                {
+                    var deleteResult = _assemblyService.DeleteFiles(result.FilesToDelete);
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix and drawing updates completed and old files cleaned up.",
+                        result = result,
+                        deleteResult = deleteResult
+                    });
+                }
+                else
+                {
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix and drawing updates completed. No files to delete.",
+                        result = result
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error during recursive rename with prefix and drawing updates: {ex.Message}" });
+            }
+        }
 
         [HttpPost("delete-files")]
         public IActionResult DeleteFiles([FromBody] DeleteFilesRequest request)
@@ -390,9 +269,10 @@ namespace InventorAPI.Controllers
             try
             {
                 var result = _assemblyService.DeleteFiles(request.FilePaths);
-                return Ok(new { 
-                    message = "File deletion completed.", 
-                    result = result 
+                return Ok(new
+                {
+                    message = "File deletion completed.",
+                    result = result
                 });
             }
             catch (Exception ex)
@@ -401,284 +281,27 @@ namespace InventorAPI.Controllers
             }
         }
 
-        [HttpPost("design-assist-update-drawing-references")]
-        public IActionResult DesignAssistUpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
-        {
-            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
-                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.ModelPath))
-                return BadRequest(new { message = "modelPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.OldPrefix))
-                return BadRequest(new { message = "oldPrefix is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.NewPrefix))
-                return BadRequest(new { message = "newPrefix is required and cannot be empty or whitespace." });
-
-            // Validate prefix format
-            if (!System.Text.RegularExpressions.Regex.IsMatch(request.OldPrefix, @"^[A-Za-z0-9_-]+$"))
-                return BadRequest(new { message = "oldPrefix can only contain letters, numbers, underscores, and hyphens." });
-
-            if (!System.Text.RegularExpressions.Regex.IsMatch(request.NewPrefix, @"^[A-Za-z0-9_-]+$"))
-                return BadRequest(new { message = "newPrefix can only contain letters, numbers, underscores, and hyphens." });
-
-            // Validate paths
-            try
-            {
-                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
-                var modelFullPath = Path.GetFullPath(request.ModelPath);
-                var projectFullPath = !string.IsNullOrWhiteSpace(request.ProjectPath) ? Path.GetFullPath(request.ProjectPath) : null;
-                
-                if (!Directory.Exists(drawingsFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Drawings directory not found: {drawingsFullPath}",
-                        providedPath = request.DrawingsPath,
-                        resolvedPath = drawingsFullPath,
-                        validation = "directory_not_found"
-                    });
-
-                if (!Directory.Exists(modelFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Model directory not found: {modelFullPath}",
-                        providedPath = request.ModelPath,
-                        resolvedPath = modelFullPath,
-                        validation = "directory_not_found"
-                    });
-
-                if (projectFullPath != null && !Directory.Exists(projectFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Project directory not found: {projectFullPath}",
-                        providedPath = request.ProjectPath,
-                        resolvedPath = projectFullPath,
-                        validation = "directory_not_found"
-                    });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { message = $"Path validation error: {ex.Message}" });
-            }
-
-            try
-            {
-                var result = _assemblyService.DesignAssistUpdateReferences(
-                    request.DrawingsPath,
-                    request.ModelPath,
-                    request.ProjectPath,
-                    request.OldPrefix,
-                    request.NewPrefix
-                );
-
-                return Ok(new
-                {
-                    success = true,
-                    message = "Design assist drawing references update completed successfully",
-                    result = result,
-                    summary = new
-                    {
-                        processedDrawings = result.ProcessedDrawings.Count,
-                        updatedReferences = result.UpdatedReferences.Count,
-                        failedDrawings = result.FailedDrawings.Count,
-                        renamedDrawings = result.RenamedDrawings.Count,
-                        failedRenames = result.FailedRenames.Count,
-                        renamedProjects = result.RenamedProjects.Count,
-                        failedProjectRenames = result.FailedProjectRenames.Count
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "An error occurred while updating drawing references",
-                    error = ex.Message,
-                    details = ex.ToString()
-                });
-            }
-        }
-
-        [HttpPost("update-drawing-references")]
-        public IActionResult UpdateDrawingReferences([FromBody] UpdateDrawingReferencesRequest request)
-        {
-            // Enhanced validation with detailed error messages
-            if (request == null)
-                return BadRequest(new { message = "Request body is required and cannot be null." });
-
-            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
-                return BadRequest(new { message = "drawingsPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.ModelPath))
-                return BadRequest(new { message = "modelPath is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.OldPrefix))
-                return BadRequest(new { message = "oldPrefix is required and cannot be empty or whitespace." });
-
-            if (string.IsNullOrWhiteSpace(request.NewPrefix))
-                return BadRequest(new { message = "newPrefix is required and cannot be empty or whitespace." });
-
-            // Validate prefix format
-            if (!System.Text.RegularExpressions.Regex.IsMatch(request.OldPrefix, @"^[A-Za-z0-9_-]+$"))
-                return BadRequest(new { message = "oldPrefix can only contain letters, numbers, underscores, and hyphens." });
-
-            if (!System.Text.RegularExpressions.Regex.IsMatch(request.NewPrefix, @"^[A-Za-z0-9_-]+$"))
-                return BadRequest(new { message = "newPrefix can only contain letters, numbers, underscores, and hyphens." });
-
-            // Validate paths
-            try
-            {
-                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
-                var modelFullPath = Path.GetFullPath(request.ModelPath);
-                var projectFullPath = !string.IsNullOrWhiteSpace(request.ProjectPath) ? Path.GetFullPath(request.ProjectPath) : null;
-                
-                if (!Directory.Exists(drawingsFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Drawings directory not found: {drawingsFullPath}",
-                        providedPath = request.DrawingsPath,
-                        resolvedPath = drawingsFullPath,
-                        validation = "directory_not_found"
-                    });
-
-                if (!Directory.Exists(modelFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Model directory not found: {modelFullPath}",
-                        providedPath = request.ModelPath,
-                        resolvedPath = modelFullPath,
-                        validation = "directory_not_found"
-                    });
-
-                if (projectFullPath != null && !Directory.Exists(projectFullPath))
-                    return BadRequest(new
-                    {
-                        message = $"Project directory not found: {projectFullPath}",
-                        providedPath = request.ProjectPath,
-                        resolvedPath = projectFullPath,
-                        validation = "directory_not_found"
-                    });
-
-                // Check if directories are accessible
-                try
-                {
-                    Directory.GetFiles(drawingsFullPath, "*", SearchOption.TopDirectoryOnly);
-                    Directory.GetFiles(modelFullPath, "*", SearchOption.TopDirectoryOnly);
-                    if (projectFullPath != null)
-                    {
-                        Directory.GetFiles(projectFullPath, "*", SearchOption.TopDirectoryOnly);
-                    }
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    return BadRequest(new
-                    {
-                        message = "Access denied to one or more directories. Please ensure the application has read/write permissions.",
-                        validation = "access_denied"
-                    });
-                }
-                catch (Exception ex)
-                {
-                    return BadRequest(new
-                    {
-                        message = $"Error accessing directories: {ex.Message}",
-                        validation = "access_error"
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    message = $"Invalid path format: {ex.Message}",
-                    drawingsPath = request.DrawingsPath,
-                    modelPath = request.ModelPath,
-                    projectPath = request.ProjectPath,
-                    validation = "path_format_error"
-                });
-            }
-
-            try
-            {
-                Console.WriteLine($"=== Starting Drawing References Update API Call ===");
-                Console.WriteLine($"Request: DrawingsPath={request.DrawingsPath}, ModelPath={request.ModelPath}, ProjectPath={request.ProjectPath}");
-                Console.WriteLine($"Prefix Change: {request.OldPrefix} -> {request.NewPrefix}");
-
-                var result = _assemblyService.UpdateDrawingReferences(request.DrawingsPath, request.ModelPath, request.ProjectPath, request.OldPrefix, request.NewPrefix);
-                
-                // Calculate success metrics
-                var totalOperations = result.ProcessedDrawings.Count + result.RenamedDrawings.Count + result.RenamedProjects.Count;
-                var totalErrors = result.FailedDrawings.Count + result.FailedRenames.Count + result.FailedProjectRenames.Count;
-                var successRate = totalOperations > 0 ? (double)(totalOperations - totalErrors) / totalOperations * 100 : 0;
-
-                var response = new
-                {
-                    message = "Drawing and project references update completed.",
-                    success = totalErrors == 0,
-                    successRate = Math.Round(successRate, 1),
-                    timestamp = DateTime.UtcNow,
-                    summary = new
-                    {
-                        processedDrawings = result.ProcessedDrawings.Count,
-                        updatedReferences = result.UpdatedReferences.Count,
-                        failedDrawings = result.FailedDrawings.Count,
-                        renamedDrawings = result.RenamedDrawings.Count,
-                        failedRenames = result.FailedRenames.Count,
-                        renamedProjects = result.RenamedProjects.Count,
-                        failedProjectRenames = result.FailedProjectRenames.Count
-                    },
-                    details = new
-                    {
-                        processedDrawings = result.ProcessedDrawings,
-                        updatedReferences = result.UpdatedReferences,
-                        failedDrawings = result.FailedDrawings,
-                        renamedDrawings = result.RenamedDrawings,
-                        failedRenames = result.FailedRenames,
-                        renamedProjects = result.RenamedProjects,
-                        failedProjectRenames = result.FailedProjectRenames
-                    }
-                };
-
-                Console.WriteLine($"=== Drawing References Update API Call Completed ===");
-                Console.WriteLine($"Success Rate: {successRate:F1}%");
-                Console.WriteLine($"Total Operations: {totalOperations}, Errors: {totalErrors}");
-
-                return Ok(response);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"=== Drawing References Update API Call Failed ===");
-                Console.WriteLine($"Error: {ex.Message}");
-                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
-
-                return StatusCode(500, new { 
-                    message = $"Error updating drawing references: {ex.Message}",
-                    errorType = ex.GetType().Name,
-                    timestamp = DateTime.UtcNow
-                });
-            }
-        }
-
-        public class RecursiveRenameRequest
-        {
-            public List<string> AssemblyDocumentNames { get; set; } = new();
-            public Dictionary<string, string> FileNames { get; set; } = new();
-        }
-
         public class RecursiveRenameWithPrefixRequest
         {
             public string ModelPath { get; set; } = "";
             public string Prefix { get; set; } = "";
         }
 
-        public class UpdateDrawingReferencesRequest
+        public class RecursiveRenameWithPrefixAndDrawingsRequest
         {
+            [JsonPropertyName("drawingspath")]
             public string DrawingsPath { get; set; } = "";
+
+            [JsonPropertyName("modelPath")]
             public string ModelPath { get; set; } = "";
+
+            [JsonPropertyName("projectpath")]
             public string ProjectPath { get; set; } = "";
+
+            [JsonPropertyName("oldPrefix")]
             public string OldPrefix { get; set; } = "";
+
+            [JsonPropertyName("newPrefix")]
             public string NewPrefix { get; set; } = "";
         }
 
@@ -720,29 +343,4 @@ namespace InventorAPI.Controllers
         public List<ModelStateUpdate> AssemblyUpdates { get; set; } = new();
     }
 
-    public class DesignAssistRenameRequest
-    {
-        /// <summary>
-        /// The directory path containing the CAD files to be renamed
-        /// </summary>
-        [JsonPropertyName("drawingspath")]
-        [Required(ErrorMessage = "drawingsPath is required")]
-        [StringLength(500, MinimumLength = 1, ErrorMessage = "drawingsPath must be between 1 and 500 characters")]
-        public string DrawingsPath { get; set; } = "";
-
-        /// <summary>
-        /// Optional list of specific assembly files to process. If null or empty, auto-discovery will be used.
-        /// </summary>
-        [JsonPropertyName("assemblyList")]
-        public List<string>? AssemblyList { get; set; } = null;
-
-        /// <summary>
-        /// The new prefix to apply to matching components
-        /// </summary>
-        [JsonPropertyName("partPrefix")]
-        [Required(ErrorMessage = "partPrefix is required")]
-        [StringLength(50, MinimumLength = 1, ErrorMessage = "partPrefix must be between 1 and 50 characters")]
-        [RegularExpression(@"^[A-Za-z0-9_-]+$", ErrorMessage = "partPrefix can only contain letters, numbers, underscores, and hyphens")]
-        public string PartPrefix { get; set; } = "";
-    }
 }

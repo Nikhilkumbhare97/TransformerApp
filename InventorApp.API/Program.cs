@@ -59,14 +59,14 @@ builder.Services.AddDbContext<ApplicationDbContext>((serviceProvider, options) =
     var configuration = serviceProvider.GetRequiredService<IConfiguration>();
     var dbType = configuration.GetValue<string>("Database:Type", "PostgreSQL"); // Default to PostgreSQL
 
-    if (dbType.Equals("PostgreSQL", StringComparison.OrdinalIgnoreCase))
+    if (dbType?.Equals("PostgreSQL", StringComparison.OrdinalIgnoreCase) == true)
     {
         options.UseNpgsql(
             configuration.GetConnectionString("PostgresConnection"),
             npgsqlOptions => npgsqlOptions.EnableRetryOnFailure()
         );
     }
-    else if (dbType.Equals("MySQL", StringComparison.OrdinalIgnoreCase))
+    else if (dbType?.Equals("MySQL", StringComparison.OrdinalIgnoreCase) == true)
     {
         options.UseMySql(
             configuration.GetConnectionString("MySqlConnection"),
