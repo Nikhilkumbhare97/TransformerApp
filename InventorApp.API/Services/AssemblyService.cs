@@ -1907,33 +1907,57 @@ namespace InventorApp.API.Services
         // Helper method to get the Part Number property from a file
         private string GetPartNumberFromFile(string filePath)
         {
+            dynamic? inventorApp = null;
+            dynamic? doc = null;
             try
             {
                 Type? inventorType = Type.GetTypeFromProgID("Inventor.Application");
                 if (inventorType == null)
                     throw new Exception("Inventor is not installed.");
-                dynamic? inventorApp = Activator.CreateInstance(inventorType);
+                inventorApp = Activator.CreateInstance(inventorType);
 #pragma warning disable CS8602 // Dereference of a possibly null reference.
                 inventorApp.Visible = false;
 #pragma warning restore CS8602 // Dereference of a possibly null reference.
-                dynamic doc = inventorApp.Documents.Open(filePath, true);
+                doc = inventorApp.Documents.Open(filePath, true);
                 string partNumber = "";
-                try
-                {
-                    var propSets = doc.PropertySets;
-                    var designProps = propSets["Design Tracking Properties"];
-                    partNumber = designProps["Part Number"].Value.ToString();
-                }
-                finally
-                {
-                    doc.Close();
-                    inventorApp.Quit();
-                }
+                
+                var propSets = doc.PropertySets;
+                var designProps = propSets["Design Tracking Properties"];
+                partNumber = designProps["Part Number"].Value.ToString();
+                
                 return partNumber ?? "";
             }
             catch
             {
                 return "";
+            }
+            finally
+            {
+                try
+                {
+                    if (doc != null)
+                    {
+                        doc.Close();
+                        Marshal.ReleaseComObject(doc);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error closing document in GetPartNumberFromFile: {ex.Message}");
+                }
+                
+                try
+                {
+                    if (inventorApp != null)
+                    {
+                        inventorApp.Quit();
+                        Marshal.ReleaseComObject(inventorApp);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error quitting Inventor in GetPartNumberFromFile: {ex.Message}");
+                }
             }
         }
 
@@ -2495,7 +2519,7 @@ namespace InventorApp.API.Services
                 var assemblyFiles = DiscoverAssemblyFiles(modelPath);
                 if (assemblyFiles.Count == 0)
                 {
-                    Console.WriteLine("No assembly files found in the specified path.");
+                    Console.WriteLine("No assembly files found in the specifiedSystem.IO.Path.");
                     return pathToDelete;
                 }
 
@@ -2647,6 +2671,610 @@ namespace InventorApp.API.Services
             }
 
             return pathToDelete;
+        }
+
+        /// <summary>
+        /// Recursively renames assemblies and parts using a prefix and updates drawing references.
+        /// </summary>
+        public DrawingUpdateResult RenameAssemblyRecursivelyWithPrefixAndUpdateDrawings(
+            string modelPath,
+            string drawingsPath,
+            string projectPath,
+            string oldPrefix,
+            string newPrefix)
+        {
+            var result = new DrawingUpdateResult();
+            var inventorApp = GetInventorApplication();
+            inventorApp.SilentOperation = true;
+            inventorApp.Visible = false;
+
+            try
+            {
+                Console.WriteLine($"=== Starting Enhanced Recursive Rename with Drawing Updates ===");
+                Console.WriteLine($"Model Path: {modelPath}");
+                Console.WriteLine($"Drawings Path: {drawingsPath}");
+                Console.WriteLine($"Project Path: {projectPath}");
+                Console.WriteLine($"Old Prefix: {oldPrefix}");
+                Console.WriteLine($"New Prefix: {newPrefix}");
+
+                // Step 1: Perform the recursive rename on model files
+                Console.WriteLine("=== Step 1: Renaming Model Files ===");
+                var filesToDelete = RenameAssemblyRecursivelyWithPrefix(modelPath, newPrefix);
+                result.FilesToDelete = filesToDelete ?? new List<string>();
+
+                // Step 2: Discover drawing files
+                Console.WriteLine("=== Step 2: Discovering Drawing Files ===");
+                var drawingFiles = DiscoverDrawingFiles(drawingsPath);
+                Console.WriteLine($"Found {drawingFiles.Count} drawing files to process.");
+
+                if (drawingFiles.Count == 0)
+                {
+                    Console.WriteLine("No drawing files found. Skipping drawing updates.");
+                    return result;
+                }
+
+                // Step 3: Build file mapping for reference updates
+                Console.WriteLine("=== Step 3: Building File Mapping ===");
+                var fileMapping = BuildFileMappingForDrawingUpdates(modelPath, oldPrefix, newPrefix);
+                Console.WriteLine($"Built mapping for {fileMapping.Count} files.");
+
+                // Step 4: Update drawing references
+                Console.WriteLine("=== Step 4: Updating Drawing References ===");
+                UpdateDrawingReferences(drawingFiles, fileMapping, result, oldPrefix, newPrefix);
+
+                // Step 5: Update project files if project path is provided
+                if (!string.IsNullOrEmpty(projectPath) && Directory.Exists(projectPath))
+                {
+                    Console.WriteLine("=== Step 5: Updating Project Files ===");
+                    UpdateProjectFiles(projectPath, oldPrefix, newPrefix, result);
+                }
+
+                // Step 6: Validate drawing links
+                Console.WriteLine("=== Step 6: Validating Drawing Links ===");
+                ValidateDrawingLinks(drawingFiles, fileMapping, result, oldPrefix, newPrefix);
+
+                Console.WriteLine("=== Enhanced Recursive Rename with Drawing Updates Completed ===");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during enhanced recursive rename with drawing updates: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                result.ErrorMessage = ex.Message;
+                throw;
+            }
+            finally
+            {
+                try
+                {
+                    CleanupInventorApp();
+                    GC.Collect();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error during cleanup: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Discovers all drawing files in the specified directory.
+        /// </summary>
+        private List<string> DiscoverDrawingFiles(string drawingsPath)
+        {
+            try
+            {
+                return Directory.GetFiles(drawingsPath, "*.idw", SearchOption.TopDirectoryOnly)
+                    .Concat(Directory.GetFiles(drawingsPath, "*.dwg", SearchOption.TopDirectoryOnly))
+                    .Where(file => !string.IsNullOrEmpty(file))
+                    .OrderBy(file => file)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error discovering drawing files: {ex.Message}");
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
+        /// Builds a mapping of old file paths to new file paths for drawing reference updates.
+        /// </summary>
+        private Dictionary<string, string> BuildFileMappingForDrawingUpdates(string modelPath, string oldPrefix, string newPrefix)
+        {
+            var fileMapping = new Dictionary<string, string>();
+            
+            try
+            {
+                // Get all files in the model directory and subdirectories
+                var allFiles = Directory.GetFiles(modelPath, "*.*", SearchOption.AllDirectories)
+                    .Where(file => IsInventorFile(file))
+                    .ToList();
+
+                foreach (var file in allFiles)
+                {
+                    var fileName = System.IO.Path.GetFileNameWithoutExtension(file);
+                    var fileExt = System.IO.Path.GetExtension(file);
+                    var directory = System.IO.Path.GetDirectoryName(file);
+
+                    // Check if the file name starts with the old prefix
+                    if (fileName.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Generate new file name with new prefix
+                        var newFileName = fileName.Replace(oldPrefix, newPrefix, StringComparison.OrdinalIgnoreCase);
+                        
+                        if (directory != null)
+                        {
+                            var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
+
+                            // Add multiple path formats to handle different reference types
+                            fileMapping[file] = newFilePath;
+                            
+                            // Add just the filename mapping for cases where drawings reference by filename only
+                            var oldFileName = System.IO.Path.GetFileName(file);
+                            var newFileNameWithExt = newFileName + fileExt;
+                            fileMapping[oldFileName] = newFilePath; // Use full path instead of just filename
+                            
+                            // Add relative path mapping
+                            var relativePath = System.IO.Path.GetRelativePath(modelPath, file);
+                            var newRelativePath = System.IO.Path.GetRelativePath(modelPath, newFilePath);
+                            fileMapping[relativePath] = newRelativePath;
+                            
+                            // Add normalized path mappings (handle different path separators)
+                            var normalizedOldPath = file.Replace('\\', '/');
+                            var normalizedNewPath = newFilePath.Replace('\\', '/');
+                            fileMapping[normalizedOldPath] = normalizedNewPath;
+                            
+                            Console.WriteLine($"Mapped: {System.IO.Path.GetFileName(file)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error building file mapping: {ex.Message}");
+            }
+
+            return fileMapping;
+        }
+
+        /// <summary>
+        /// Checks if a file is an Inventor file based on its extension.
+        /// </summary>
+        private bool IsInventorFile(string filePath)
+        {
+            var extension = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
+            return extension == ".iam" || extension == ".ipt" || extension == ".ipn" || extension == ".idw" || extension == ".dwg";
+        }
+
+        /// <summary>
+        /// Updates drawing references to point to renamed files.
+        /// </summary>
+        private void UpdateDrawingReferences(List<string> drawingFiles, Dictionary<string, string> fileMapping, DrawingUpdateResult result, string oldPrefix, string newPrefix)
+        {
+            var inventorApp = GetInventorApplication();
+            int updatedDrawings = 0;
+            int failedDrawings = 0;
+            var processedReferences = new HashSet<string>(); // Track processed references to avoid duplicates
+
+            foreach (var drawingFile in drawingFiles)
+            {
+                var drawingFileName = System.IO.Path.GetFileName(drawingFile);
+                Console.WriteLine($"Processing drawing: {drawingFileName}");
+
+                DrawingDocument? drawingDoc = null;
+                try
+                {
+                    drawingDoc = (DrawingDocument)inventorApp.Documents.Open(drawingFile, false);
+                    bool drawingUpdated = false;
+                    int referencesUpdated = 0;
+                    int referencesFailed = 0;
+
+                    // Process all sheets in the drawing
+                    var sheets = drawingDoc.Sheets;
+                    foreach (Sheet sheet in sheets)
+                    {
+                        var views = sheet.DrawingViews;
+                        foreach (DrawingView view in views)
+                        {
+                            try
+                            {
+                                var referencedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
+                                if (string.IsNullOrEmpty(referencedPath))
+                                    continue;
+
+                                // Create a unique key for this reference to avoid processing duplicates
+                                var referenceKey = $"{drawingFileName}:{referencedPath}";
+                                if (processedReferences.Contains(referenceKey))
+                                {
+                                    Console.WriteLine($"  Skipping duplicate reference: {System.IO.Path.GetFileName(referencedPath)}");
+                                    continue;
+                                }
+                                processedReferences.Add(referenceKey);
+
+                                // Check if this reference needs to be updated
+                                Console.WriteLine($"  Checking reference: {referencedPath}");
+                                
+                                // Try to find a mapping for this reference
+                                string? newPath = null;
+                                string? mappingKey = null;
+                                
+                                // Try exact path match first
+                                if (fileMapping.ContainsKey(referencedPath))
+                                {
+                                    newPath = fileMapping[referencedPath];
+                                    mappingKey = referencedPath;
+                                }
+                                // Try normalized path match (handle different path separators)
+                                else
+                                {
+                                    var normalizedPath = referencedPath.Replace('\\', '/');
+                                    if (fileMapping.ContainsKey(normalizedPath))
+                                    {
+                                        newPath = fileMapping[normalizedPath];
+                                        mappingKey = normalizedPath;
+                                    }
+                                }
+                                
+                                // Try filename only match - but we need to find the full path
+                                if (newPath == null)
+                                {
+                                    var fileName = System.IO.Path.GetFileName(referencedPath);
+                                    if (fileMapping.ContainsKey(fileName))
+                                    {
+                                        newPath = fileMapping[fileName]; // This now contains the full path
+                                        mappingKey = fileName;
+                                    }
+                                }
+                                
+                                // Try case-insensitive filename match
+                                if (newPath == null)
+                                {
+                                    var fileName = System.IO.Path.GetFileName(referencedPath);
+                                    var caseInsensitiveMapping = fileMapping.FirstOrDefault(kvp => 
+                                        string.Equals(System.IO.Path.GetFileName(kvp.Key), fileName, StringComparison.OrdinalIgnoreCase));
+                                    
+                                    if (caseInsensitiveMapping.Key != null)
+                                    {
+                                        newPath = caseInsensitiveMapping.Value;
+                                        mappingKey = caseInsensitiveMapping.Key;
+                                    }
+                                }
+                                
+                                if (newPath != null)
+                                {
+                                    Console.WriteLine($"  Found mapping: {mappingKey} -> {System.IO.Path.GetFileName(newPath)}");
+                                    Console.WriteLine($"  Full new path: {newPath}");
+                                    Console.WriteLine($"  Updating reference: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newPath)}");
+
+                                    // Try to update the reference
+                                    if (UpdateDrawingReference(drawingDoc, view, referencedPath, newPath, drawingFileName))
+                                    {
+                                        drawingUpdated = true;
+                                        referencesUpdated++;
+                                        result.UpdatedReferences.Add($"{drawingFileName}: {System.IO.Path.GetFileName(referencedPath)} -> {System.IO.Path.GetFileName(newPath)}");
+                                        Console.WriteLine($"  ✓ Reference updated successfully");
+                                    }
+                                    else
+                                    {
+                                        referencesFailed++;
+                                        result.FailedReferences.Add($"{drawingFileName}: Failed to update {System.IO.Path.GetFileName(referencedPath)}");
+                                        Console.WriteLine($"  ✗ Reference update failed");
+                                    }
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"  Reference does not need updating: {System.IO.Path.GetFileName(referencedPath)}");
+                                    Console.WriteLine($"  (No mapping found for this reference)");
+                                }
+                            }
+                            catch (Exception viewEx)
+                            {
+                                Console.WriteLine($"  Error processing view: {viewEx.Message}");
+                                result.FailedReferences.Add($"{drawingFileName}: View processing error - {viewEx.Message}");
+                                referencesFailed++;
+                            }
+                        }
+                    }
+
+                    if (drawingUpdated)
+                    {
+                        Console.WriteLine($"  Saving drawing with {referencesUpdated} updated references...");
+                        drawingDoc.Save();
+                        updatedDrawings++;
+                        Console.WriteLine($"  ✓ Drawing updated successfully: {drawingFileName} ({referencesUpdated} references updated, {referencesFailed} failed)");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  - No updates needed for: {drawingFileName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  ✗ Error processing drawing {drawingFileName}: {ex.Message}");
+                    result.FailedDrawings.Add($"{drawingFileName}: {ex.Message}");
+                    failedDrawings++;
+                }
+                finally
+                {
+                    if (drawingDoc != null)
+                    {
+                        try
+                        {
+                            drawingDoc.Close(false);
+                            Marshal.ReleaseComObject(drawingDoc);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"  Error closing drawing document: {ex.Message}");
+                        }
+                    }
+                }
+            }
+
+            result.UpdatedDrawings = updatedDrawings;
+            result.FailedDrawingsCount = failedDrawings;
+            Console.WriteLine($"Drawing update summary: {updatedDrawings} updated, {failedDrawings} failed");
+        }
+
+        /// <summary>
+        /// Updates a specific drawing reference using document descriptor approach.
+        /// </summary>
+        private bool UpdateDrawingReference(DrawingDocument drawingDoc, DrawingView view, string oldPath, string newPath, string drawingFileName)
+        {
+            try
+            {
+                // Check if the new file exists
+                if (!System.IO.File.Exists(newPath))
+                {
+                    Console.WriteLine($"    New file does not exist: {System.IO.Path.GetFileName(newPath)}");
+                    return false;
+                }
+
+                var refDocDesc = view.ReferencedDocumentDescriptor;
+                if (refDocDesc == null)
+                {
+                    Console.WriteLine($"    No document descriptor found for view");
+                    return false;
+                }
+
+                // Check current reference path
+                var currentPath = refDocDesc.FullDocumentName;
+                Console.WriteLine($"    Current reference: {System.IO.Path.GetFileName(currentPath)}");
+                Console.WriteLine($"    Target reference: {System.IO.Path.GetFileName(newPath)}");
+
+                // If already pointing to the correct file, no update needed
+                if (currentPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"    Reference already correct: {System.IO.Path.GetFileName(newPath)}");
+                    return true;
+                }
+
+                // Method 1: Use Document Descriptor ReplaceReference approach
+                try
+                {
+                    Console.WriteLine($"    Attempting Document Descriptor ReplaceReference method...");
+                    
+                    var inventorApp = GetInventorApplication();
+                    
+                    // Close the old document if it's open
+                    var oldDoc = refDocDesc.ReferencedDocument;
+                    if (oldDoc != null)
+                    {
+                        Console.WriteLine($"    Closing old document: {System.IO.Path.GetFileName(currentPath)}");
+                        ((Inventor.Document)oldDoc).Close(false);
+                        Marshal.ReleaseComObject(oldDoc);
+                        Thread.Sleep(1000);
+                    }
+                    
+                    // Try to use the document descriptor's ReplaceReference method
+                    // This is the proper Inventor API way to replace references
+                    try
+                    {
+                        // Use the document descriptor to replace the reference
+                        // The ReplaceReference method should be available on the document descriptor
+                        refDocDesc.ReferencedFileDescriptor.ReplaceReference(newPath);
+                        Console.WriteLine($"    ReplaceReference called successfully");
+                        
+                        // Force the drawing to update
+                        drawingDoc.Update();
+                        Thread.Sleep(2000);
+                        
+                        // Check if the reference was updated
+                        var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
+                        Console.WriteLine($"    Reference after ReplaceReference: {System.IO.Path.GetFileName(updatedPath)}");
+                        
+                        if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"    ✓ Reference successfully updated using Document Descriptor ReplaceReference: {System.IO.Path.GetFileName(newPath)}");
+                            return true;
+                        }
+                    }
+                    catch (Exception replaceEx)
+                    {
+                        Console.WriteLine($"    Document Descriptor ReplaceReference failed: {replaceEx.Message}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Document Descriptor approach failed: {ex.Message}");
+                }
+
+                // Method 2: Try using Inventor's reference management with forced path update
+                try
+                {
+                    Console.WriteLine($"    Attempting forced path update method...");
+                    
+                    // Close the old document if it's open
+                    var oldDoc = refDocDesc.ReferencedDocument;
+                    if (oldDoc != null)
+                    {
+                        Console.WriteLine($"    Closing old document: {System.IO.Path.GetFileName(currentPath)}");
+                        ((Inventor.Document)oldDoc).Close(false);
+                        Marshal.ReleaseComObject(oldDoc);
+                        Thread.Sleep(1000);
+                    }
+                    
+                    // Force the drawing to update and look for the new file
+                    drawingDoc.Update();
+                    Thread.Sleep(2000);
+                    drawingDoc.Save();
+                    Thread.Sleep(1000);
+                    
+                    // Check if the reference was updated
+                    var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
+                    Console.WriteLine($"    Reference after forced update: {System.IO.Path.GetFileName(updatedPath)}");
+                    
+                    if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"    ✓ Reference successfully updated using forced update: {System.IO.Path.GetFileName(newPath)}");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Forced update approach failed: {ex.Message}");
+                }
+
+                // Method 3: Try using Inventor's document-level reference update
+                try
+                {
+                    Console.WriteLine($"    Attempting document-level reference update...");
+                    
+                    var inventorApp = GetInventorApplication();
+                    inventorApp.SilentOperation = true;
+                    
+                    // Force update the entire drawing document
+                    drawingDoc.Update();
+                    Thread.Sleep(2000);
+                    drawingDoc.Save();
+                    Thread.Sleep(1000);
+                    
+                    // Check if the reference was updated
+                    var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
+                    Console.WriteLine($"    Reference after document-level update: {System.IO.Path.GetFileName(updatedPath)}");
+                    
+                    if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"    ✓ Reference successfully updated using document-level update: {System.IO.Path.GetFileName(newPath)}");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Document-level update approach failed: {ex.Message}");
+                }
+
+                Console.WriteLine($"    ✗ Reference update failed for: {System.IO.Path.GetFileName(oldPath)} -> {System.IO.Path.GetFileName(newPath)}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"    Error updating drawing reference: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Updates project files to reflect renamed files.
+        /// </summary>
+        private void UpdateProjectFiles(string projectPath, string oldPrefix, string newPrefix, DrawingUpdateResult result)
+        {
+            try
+            {
+                var projectFiles = Directory.GetFiles(projectPath, "*.ipj", SearchOption.TopDirectoryOnly);
+
+                foreach (var projectFile in projectFiles)
+                {
+                    var projectFileName = System.IO.Path.GetFileName(projectFile);
+                    Console.WriteLine($"Processing project file: {projectFileName}");
+
+                    try
+                    {
+                        var projectContent = System.IO.File.ReadAllText(projectFile);
+                        var originalContent = projectContent;
+                        bool contentUpdated = false;
+
+                        // Update file references in the project file
+                        var allFiles = Directory.GetFiles(projectPath, "*.*", SearchOption.AllDirectories)
+                            .Where(file => IsInventorFile(file))
+                            .ToList();
+
+                        foreach (var file in allFiles)
+                        {
+                            var fileName = System.IO.Path.GetFileNameWithoutExtension(file);
+                            if (fileName.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                            {
+                                var newFileName = fileName.Replace(oldPrefix, newPrefix, StringComparison.OrdinalIgnoreCase);
+                                var fileExt = System.IO.Path.GetExtension(file);
+                                var directory = System.IO.Path.GetDirectoryName(file);
+                                if (directory != null)
+                                {
+                                    var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
+
+                                if (System.IO.File.Exists(newFilePath))
+                                {
+                                    // Update absolute paths
+                                    if (projectContent.Contains(file, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        projectContent = projectContent.Replace(file, newFilePath, StringComparison.OrdinalIgnoreCase);
+                                        contentUpdated = true;
+                                        Console.WriteLine($"  Updated absolute path: {System.IO.Path.GetFileName(file)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                                    }
+
+                                    // Update relative paths
+                                    var relativePath = System.IO.Path.GetRelativePath(projectPath, file);
+                                    var newRelativePath = System.IO.Path.GetRelativePath(projectPath, newFilePath);
+                                    if (projectContent.Contains(relativePath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        projectContent = projectContent.Replace(relativePath, newRelativePath, StringComparison.OrdinalIgnoreCase);
+                                        contentUpdated = true;
+                                        Console.WriteLine($"  Updated relative path: {relativePath} -> {newRelativePath}");
+                                    }
+                                }
+                                }
+                            }
+                        }
+
+                        if (contentUpdated)
+                        {
+                            System.IO.File.WriteAllText(projectFile, projectContent);
+                            result.UpdatedProjectFiles.Add(projectFileName);
+                            Console.WriteLine($"  ✓ Project file updated: {projectFileName}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  - No updates needed for project file: {projectFileName}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  ✗ Error processing project file {projectFileName}: {ex.Message}");
+                        result.FailedProjectFiles.Add($"{projectFileName}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating project files: {ex.Message}");
+                result.ErrorMessage = ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// Result class for drawing update operations.
+        /// </summary>
+        public class DrawingUpdateResult
+        {
+            public List<string> FilesToDelete { get; set; } = new();
+            public List<string> UpdatedReferences { get; set; } = new();
+            public List<string> FailedReferences { get; set; } = new();
+            public List<string> FailedDrawings { get; set; } = new();
+            public List<string> UpdatedProjectFiles { get; set; } = new();
+            public List<string> FailedProjectFiles { get; set; } = new();
+            public int UpdatedDrawings { get; set; }
+            public int FailedDrawingsCount { get; set; }
+            public string ErrorMessage { get; set; } = "";
         }
 
         /// <summary>
@@ -3255,7 +3883,7 @@ namespace InventorApp.API.Services
                 catch (Exception ex)
                 {
                     Console.WriteLine($"  Error updating project file {System.IO.Path.GetFileName(projectFile)}: {ex.Message}");
-                    result.FailedProjectRenames.Add($"Content update failed: {System.IO.Path.GetFileName(projectFile)} - {ex.Message}");
+                    result.FailedProjectFiles.Add($"Content update failed: {System.IO.Path.GetFileName(projectFile)} - {ex.Message}");
                 }
             }
 
@@ -3660,19 +4288,6 @@ namespace InventorApp.API.Services
             }
         }
 
-        /// <summary>
-        /// Result class for drawing and project reference updates
-        /// </summary>
-        public class DrawingUpdateResult
-        {
-            public List<string> ProcessedDrawings { get; set; } = new();
-            public List<string> UpdatedReferences { get; set; } = new();
-            public List<string> FailedDrawings { get; set; } = new();
-            public List<string> RenamedDrawings { get; set; } = new();
-            public List<string> FailedRenames { get; set; } = new();
-            public List<string> RenamedProjects { get; set; } = new();
-            public List<string> FailedProjectRenames { get; set; } = new();
-        }
 
         /// <summary>
         /// Result class for file deletion operations

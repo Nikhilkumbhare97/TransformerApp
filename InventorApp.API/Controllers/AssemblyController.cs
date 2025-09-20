@@ -175,6 +175,89 @@ namespace InventorAPI.Controllers
             }
         }
 
+        [HttpPost("design-assist-recursive-rename-with-prefix-and-drawings")]
+        public IActionResult DesignAssistRecursiveRenameWithPrefixAndDrawings([FromBody] RecursiveRenameWithPrefixAndDrawingsRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.ModelPath))
+                return BadRequest(new { message = "modelPath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.DrawingsPath))
+                return BadRequest(new { message = "drawingspath is required." });
+
+            if (string.IsNullOrWhiteSpace(request.OldPrefix))
+                return BadRequest(new { message = "oldPrefix is required." });
+
+            if (string.IsNullOrWhiteSpace(request.NewPrefix))
+                return BadRequest(new { message = "newPrefix is required." });
+
+            // Validate path formats
+            try
+            {
+                var modelFullPath = Path.GetFullPath(request.ModelPath);
+                var drawingsFullPath = Path.GetFullPath(request.DrawingsPath);
+
+                if (!Directory.Exists(modelFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Model directory not found: {modelFullPath}",
+                        providedPath = request.ModelPath,
+                        resolvedPath = modelFullPath
+                    });
+
+                if (!Directory.Exists(drawingsFullPath))
+                    return BadRequest(new
+                    {
+                        message = $"Drawings directory not found: {drawingsFullPath}",
+                        providedPath = request.DrawingsPath,
+                        resolvedPath = drawingsFullPath
+                    });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    message = $"Invalid path format: {ex.Message}",
+                    modelPath = request.ModelPath,
+                    drawingsPath = request.DrawingsPath
+                });
+            }
+
+            try
+            {
+                // Perform the enhanced recursive rename with drawing updates
+                var result = _assemblyService.RenameAssemblyRecursivelyWithPrefixAndUpdateDrawings(
+                    request.ModelPath,
+                    request.DrawingsPath,
+                    request.ProjectPath,
+                    request.OldPrefix,
+                    request.NewPrefix);
+
+                // Step 2: If rename was successful and there are files to delete, call the delete API
+                if (result.FilesToDelete != null && result.FilesToDelete.Count > 0)
+                {
+                    var deleteResult = _assemblyService.DeleteFiles(result.FilesToDelete);
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix and drawing updates completed and old files cleaned up.",
+                        result = result,
+                        deleteResult = deleteResult
+                    });
+                }
+                else
+                {
+                    return Ok(new
+                    {
+                        message = "Recursive rename with prefix and drawing updates completed. No files to delete.",
+                        result = result
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = $"Error during recursive rename with prefix and drawing updates: {ex.Message}" });
+            }
+        }
+
         [HttpPost("delete-files")]
         public IActionResult DeleteFiles([FromBody] DeleteFilesRequest request)
         {
@@ -202,6 +285,24 @@ namespace InventorAPI.Controllers
         {
             public string ModelPath { get; set; } = "";
             public string Prefix { get; set; } = "";
+        }
+
+        public class RecursiveRenameWithPrefixAndDrawingsRequest
+        {
+            [JsonPropertyName("drawingspath")]
+            public string DrawingsPath { get; set; } = "";
+
+            [JsonPropertyName("modelPath")]
+            public string ModelPath { get; set; } = "";
+
+            [JsonPropertyName("projectpath")]
+            public string ProjectPath { get; set; } = "";
+
+            [JsonPropertyName("oldPrefix")]
+            public string OldPrefix { get; set; } = "";
+
+            [JsonPropertyName("newPrefix")]
+            public string NewPrefix { get; set; } = "";
         }
 
         public class DeleteFilesRequest
