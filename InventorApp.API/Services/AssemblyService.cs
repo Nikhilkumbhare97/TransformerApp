@@ -30,6 +30,9 @@ namespace InventorApp.API.Services
 
                     _inventorApp = (Inventor.Application)Activator.CreateInstance(inventorType)!;
                     _inventorApp.Visible = true;
+
+                    // Configure Inventor for automation to handle dialogs automatically
+                    ConfigureInventorForAutomation(_inventorApp);
                 }
                 catch (Exception ex)
                 {
@@ -38,6 +41,38 @@ namespace InventorApp.API.Services
             }
             return _inventorApp;
         }
+
+        /// <summary>
+        /// Configures Inventor application for silent automation to prevent user dialogs.
+        /// </summary>
+        private void ConfigureInventorForAutomation(Inventor.Application inventorApp)
+        {
+            try
+            {
+                // Enable silent operation to prevent user dialogs
+                inventorApp.SilentOperation = true;
+
+                // Set user interaction level to suppress dialogs
+                inventorApp.UserInterfaceManager.UserInteractionDisabled = true;
+
+                Console.WriteLine("Inventor configured for silent automation");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Could not configure Inventor for automation: {ex.Message}");
+                // Continue with basic silent operation setting
+                try
+                {
+                    inventorApp.SilentOperation = true;
+                    inventorApp.UserInterfaceManager.UserInteractionDisabled = true;
+                }
+                catch (Exception silentEx)
+                {
+                    Console.WriteLine($"Warning: Could not set SilentOperation: {silentEx.Message}");
+                }
+            }
+        }
+
 
         public void OpenAssembly(string assemblyPath)
         {
@@ -1920,11 +1955,11 @@ namespace InventorApp.API.Services
 #pragma warning restore CS8602 // Dereference of a possibly null reference.
                 doc = inventorApp.Documents.Open(filePath, true);
                 string partNumber = "";
-                
+
                 var propSets = doc.PropertySets;
                 var designProps = propSets["Design Tracking Properties"];
                 partNumber = designProps["Part Number"].Value.ToString();
-                
+
                 return partNumber ?? "";
             }
             catch
@@ -1945,7 +1980,7 @@ namespace InventorApp.API.Services
                 {
                     Console.WriteLine($"Error closing document in GetPartNumberFromFile: {ex.Message}");
                 }
-                
+
                 try
                 {
                     if (inventorApp != null)
@@ -2686,7 +2721,10 @@ namespace InventorApp.API.Services
             var result = new DrawingUpdateResult();
             var inventorApp = GetInventorApplication();
             inventorApp.SilentOperation = true;
-            inventorApp.Visible = false;
+            inventorApp.Visible = true; // Keep visible for debugging, but configure for automation
+
+            // Ensure automation settings are applied
+            ConfigureInventorForAutomation(inventorApp);
 
             try
             {
@@ -2783,7 +2821,7 @@ namespace InventorApp.API.Services
         private Dictionary<string, string> BuildFileMappingForDrawingUpdates(string modelPath, string oldPrefix, string newPrefix)
         {
             var fileMapping = new Dictionary<string, string>();
-            
+
             try
             {
                 // Get all files in the model directory and subdirectories
@@ -2802,29 +2840,29 @@ namespace InventorApp.API.Services
                     {
                         // Generate new file name with new prefix
                         var newFileName = fileName.Replace(oldPrefix, newPrefix, StringComparison.OrdinalIgnoreCase);
-                        
+
                         if (directory != null)
                         {
                             var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
 
                             // Add multiple path formats to handle different reference types
                             fileMapping[file] = newFilePath;
-                            
+
                             // Add just the filename mapping for cases where drawings reference by filename only
                             var oldFileName = System.IO.Path.GetFileName(file);
                             var newFileNameWithExt = newFileName + fileExt;
                             fileMapping[oldFileName] = newFilePath; // Use full path instead of just filename
-                            
+
                             // Add relative path mapping
                             var relativePath = System.IO.Path.GetRelativePath(modelPath, file);
                             var newRelativePath = System.IO.Path.GetRelativePath(modelPath, newFilePath);
                             fileMapping[relativePath] = newRelativePath;
-                            
+
                             // Add normalized path mappings (handle different path separators)
                             var normalizedOldPath = file.Replace('\\', '/');
                             var normalizedNewPath = newFilePath.Replace('\\', '/');
                             fileMapping[normalizedOldPath] = normalizedNewPath;
-                            
+
                             Console.WriteLine($"Mapped: {System.IO.Path.GetFileName(file)} -> {System.IO.Path.GetFileName(newFilePath)}");
                         }
                     }
@@ -2894,11 +2932,11 @@ namespace InventorApp.API.Services
 
                                 // Check if this reference needs to be updated
                                 Console.WriteLine($"  Checking reference: {referencedPath}");
-                                
+
                                 // Try to find a mapping for this reference
                                 string? newPath = null;
                                 string? mappingKey = null;
-                                
+
                                 // Try exact path match first
                                 if (fileMapping.ContainsKey(referencedPath))
                                 {
@@ -2915,7 +2953,7 @@ namespace InventorApp.API.Services
                                         mappingKey = normalizedPath;
                                     }
                                 }
-                                
+
                                 // Try filename only match - but we need to find the full path
                                 if (newPath == null)
                                 {
@@ -2926,21 +2964,21 @@ namespace InventorApp.API.Services
                                         mappingKey = fileName;
                                     }
                                 }
-                                
+
                                 // Try case-insensitive filename match
                                 if (newPath == null)
                                 {
                                     var fileName = System.IO.Path.GetFileName(referencedPath);
-                                    var caseInsensitiveMapping = fileMapping.FirstOrDefault(kvp => 
+                                    var caseInsensitiveMapping = fileMapping.FirstOrDefault(kvp =>
                                         string.Equals(System.IO.Path.GetFileName(kvp.Key), fileName, StringComparison.OrdinalIgnoreCase));
-                                    
+
                                     if (caseInsensitiveMapping.Key != null)
                                     {
                                         newPath = caseInsensitiveMapping.Value;
                                         mappingKey = caseInsensitiveMapping.Key;
                                     }
                                 }
-                                
+
                                 if (newPath != null)
                                 {
                                     Console.WriteLine($"  Found mapping: {mappingKey} -> {System.IO.Path.GetFileName(newPath)}");
@@ -3054,9 +3092,9 @@ namespace InventorApp.API.Services
                 try
                 {
                     Console.WriteLine($"    Attempting Document Descriptor ReplaceReference method...");
-                    
+
                     var inventorApp = GetInventorApplication();
-                    
+
                     // Close the old document if it's open
                     var oldDoc = refDocDesc.ReferencedDocument;
                     if (oldDoc != null)
@@ -3066,7 +3104,7 @@ namespace InventorApp.API.Services
                         Marshal.ReleaseComObject(oldDoc);
                         Thread.Sleep(1000);
                     }
-                    
+
                     // Try to use the document descriptor's ReplaceReference method
                     // This is the proper Inventor API way to replace references
                     try
@@ -3075,15 +3113,15 @@ namespace InventorApp.API.Services
                         // The ReplaceReference method should be available on the document descriptor
                         refDocDesc.ReferencedFileDescriptor.ReplaceReference(newPath);
                         Console.WriteLine($"    ReplaceReference called successfully");
-                        
+
                         // Force the drawing to update
                         drawingDoc.Update();
                         Thread.Sleep(2000);
-                        
+
                         // Check if the reference was updated
                         var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
                         Console.WriteLine($"    Reference after ReplaceReference: {System.IO.Path.GetFileName(updatedPath)}");
-                        
+
                         if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
                         {
                             Console.WriteLine($"    ✓ Reference successfully updated using Document Descriptor ReplaceReference: {System.IO.Path.GetFileName(newPath)}");
@@ -3104,7 +3142,7 @@ namespace InventorApp.API.Services
                 try
                 {
                     Console.WriteLine($"    Attempting forced path update method...");
-                    
+
                     // Close the old document if it's open
                     var oldDoc = refDocDesc.ReferencedDocument;
                     if (oldDoc != null)
@@ -3114,17 +3152,17 @@ namespace InventorApp.API.Services
                         Marshal.ReleaseComObject(oldDoc);
                         Thread.Sleep(1000);
                     }
-                    
+
                     // Force the drawing to update and look for the new file
                     drawingDoc.Update();
                     Thread.Sleep(2000);
                     drawingDoc.Save();
                     Thread.Sleep(1000);
-                    
+
                     // Check if the reference was updated
                     var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
                     Console.WriteLine($"    Reference after forced update: {System.IO.Path.GetFileName(updatedPath)}");
-                    
+
                     if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
                     {
                         Console.WriteLine($"    ✓ Reference successfully updated using forced update: {System.IO.Path.GetFileName(newPath)}");
@@ -3140,20 +3178,20 @@ namespace InventorApp.API.Services
                 try
                 {
                     Console.WriteLine($"    Attempting document-level reference update...");
-                    
+
                     var inventorApp = GetInventorApplication();
                     inventorApp.SilentOperation = true;
-                    
+
                     // Force update the entire drawing document
                     drawingDoc.Update();
                     Thread.Sleep(2000);
                     drawingDoc.Save();
                     Thread.Sleep(1000);
-                    
+
                     // Check if the reference was updated
                     var updatedPath = view.ReferencedDocumentDescriptor?.FullDocumentName;
                     Console.WriteLine($"    Reference after document-level update: {System.IO.Path.GetFileName(updatedPath)}");
-                    
+
                     if (updatedPath != null && updatedPath.Equals(newPath, StringComparison.OrdinalIgnoreCase))
                     {
                         Console.WriteLine($"    ✓ Reference successfully updated using document-level update: {System.IO.Path.GetFileName(newPath)}");
@@ -3212,26 +3250,26 @@ namespace InventorApp.API.Services
                                 {
                                     var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
 
-                                if (System.IO.File.Exists(newFilePath))
-                                {
-                                    // Update absolute paths
-                                    if (projectContent.Contains(file, StringComparison.OrdinalIgnoreCase))
+                                    if (System.IO.File.Exists(newFilePath))
                                     {
-                                        projectContent = projectContent.Replace(file, newFilePath, StringComparison.OrdinalIgnoreCase);
-                                        contentUpdated = true;
-                                        Console.WriteLine($"  Updated absolute path: {System.IO.Path.GetFileName(file)} -> {System.IO.Path.GetFileName(newFilePath)}");
-                                    }
+                                        // Update absolute paths
+                                        if (projectContent.Contains(file, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            projectContent = projectContent.Replace(file, newFilePath, StringComparison.OrdinalIgnoreCase);
+                                            contentUpdated = true;
+                                            Console.WriteLine($"  Updated absolute path: {System.IO.Path.GetFileName(file)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                                        }
 
-                                    // Update relative paths
-                                    var relativePath = System.IO.Path.GetRelativePath(projectPath, file);
-                                    var newRelativePath = System.IO.Path.GetRelativePath(projectPath, newFilePath);
-                                    if (projectContent.Contains(relativePath, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        projectContent = projectContent.Replace(relativePath, newRelativePath, StringComparison.OrdinalIgnoreCase);
-                                        contentUpdated = true;
-                                        Console.WriteLine($"  Updated relative path: {relativePath} -> {newRelativePath}");
+                                        // Update relative paths
+                                        var relativePath = System.IO.Path.GetRelativePath(projectPath, file);
+                                        var newRelativePath = System.IO.Path.GetRelativePath(projectPath, newFilePath);
+                                        if (projectContent.Contains(relativePath, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            projectContent = projectContent.Replace(relativePath, newRelativePath, StringComparison.OrdinalIgnoreCase);
+                                            contentUpdated = true;
+                                            Console.WriteLine($"  Updated relative path: {relativePath} -> {newRelativePath}");
+                                        }
                                     }
-                                }
                                 }
                             }
                         }
