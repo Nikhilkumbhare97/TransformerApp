@@ -2760,16 +2760,38 @@ namespace InventorApp.API.Services
                 Console.WriteLine("=== Step 4: Updating Drawing References ===");
                 UpdateDrawingReferences(drawingFiles, fileMapping, result, oldPrefix, newPrefix);
 
-                // Step 5: Update project files if project path is provided
-                if (!string.IsNullOrEmpty(projectPath) && Directory.Exists(projectPath))
+                // Step 5: Close Inventor before file operations to prevent file locks
+                Console.WriteLine("=== Step 5: Closing Inventor for File Operations ===");
+                try
                 {
-                    Console.WriteLine("=== Step 5: Updating Project Files ===");
-                    UpdateProjectFiles(projectPath, oldPrefix, newPrefix, result);
+                    CleanupInventorApp();
+                    GC.Collect();
+                    Thread.Sleep(2000); // Wait for file handles to be released
+                    Console.WriteLine("Inventor closed successfully for file operations");
+                }
+                catch (Exception cleanupEx)
+                {
+                    Console.WriteLine($"Warning: Error during Inventor cleanup: {cleanupEx.Message}");
                 }
 
-                // Step 6: Validate drawing links
-                Console.WriteLine("=== Step 6: Validating Drawing Links ===");
-                ValidateDrawingLinks(drawingFiles, fileMapping, result, oldPrefix, newPrefix);
+                // Step 6: Rename drawing files
+                Console.WriteLine("=== Step 6: Renaming Drawing Files ===");
+                var renamedDrawingFiles = RenameDrawingFiles(drawingFiles, oldPrefix, newPrefix, result);
+
+                // Step 7: Update project files if project path is provided
+                if (!string.IsNullOrEmpty(projectPath) && Directory.Exists(projectPath))
+                {
+                    Console.WriteLine("=== Step 7: Updating Project Files ===");
+                    UpdateProjectFiles(projectPath, oldPrefix, newPrefix, result);
+                    
+                    // Step 8: Rename project file
+                    Console.WriteLine("=== Step 8: Renaming Project File ===");
+                    RenameProjectFile(projectPath, oldPrefix, newPrefix, result);
+                }
+
+                // Step 9: Validate drawing links
+                Console.WriteLine("=== Step 9: Validating Drawing Links ===");
+                ValidateDrawingLinks(renamedDrawingFiles, fileMapping, result, oldPrefix, newPrefix);
 
                 Console.WriteLine("=== Enhanced Recursive Rename with Drawing Updates Completed ===");
                 return result;
@@ -2785,13 +2807,213 @@ namespace InventorApp.API.Services
             {
                 try
                 {
-                    CleanupInventorApp();
-                    GC.Collect();
+                    // Inventor is already closed in Step 5, but ensure cleanup in case of errors
+                    if (_inventorApp != null)
+                    {
+                        Console.WriteLine("Final cleanup: Ensuring Inventor is closed");
+                        CleanupInventorApp();
+                        GC.Collect();
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error during cleanup: {ex.Message}");
+                    Console.WriteLine($"Error during final cleanup: {ex.Message}");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Renames drawing files to match the new prefix.
+        /// </summary>
+        private List<string> RenameDrawingFiles(List<string> drawingFiles, string oldPrefix, string newPrefix, DrawingUpdateResult result)
+        {
+            var renamedFiles = new List<string>();
+            
+            try
+            {
+                Console.WriteLine($"Renaming {drawingFiles.Count} drawing files...");
+                
+                foreach (var drawingFile in drawingFiles)
+                {
+                    try
+                    {
+                        var fileName = System.IO.Path.GetFileNameWithoutExtension(drawingFile);
+                        var fileExt = System.IO.Path.GetExtension(drawingFile);
+                        var directory = System.IO.Path.GetDirectoryName(drawingFile);
+                        
+                        // Check if the file name starts with the old prefix
+                        if (fileName.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Generate new file name with new prefix
+                            var newFileName = fileName.Replace(oldPrefix, newPrefix, StringComparison.OrdinalIgnoreCase);
+                            
+                            if (directory != null)
+                            {
+                                var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
+                                
+                                // Check if the new file already exists
+                                if (System.IO.File.Exists(newFilePath))
+                                {
+                                    Console.WriteLine($"  Skipping {System.IO.Path.GetFileName(drawingFile)} - target file already exists");
+                                    renamedFiles.Add(drawingFile); // Keep original path
+                                    continue;
+                                }
+                                
+                                // Rename the file with retry logic for file locks
+                                bool renameSuccess = false;
+                                for (int retry = 0; retry < 3; retry++)
+                                {
+                                    try
+                                    {
+                                        System.IO.File.Move(drawingFile, newFilePath);
+                                        renameSuccess = true;
+                                        break;
+                                    }
+                                    catch (IOException ioEx) when (ioEx.Message.Contains("being used by another process"))
+                                    {
+                                        Console.WriteLine($"  File locked, retrying in 1 second... (attempt {retry + 1}/3)");
+                                        Thread.Sleep(1000);
+                                    }
+                                }
+                                
+                                if (renameSuccess)
+                                {
+                                    Console.WriteLine($"  Renamed: {System.IO.Path.GetFileName(drawingFile)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                                    renamedFiles.Add(newFilePath);
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"  Failed to rename {System.IO.Path.GetFileName(drawingFile)} - file still locked");
+                                    result.FailedDrawings.Add($"Failed to rename {System.IO.Path.GetFileName(drawingFile)} - file locked");
+                                    renamedFiles.Add(drawingFile); // Keep original path
+                                }
+                                
+                                // Add to files to delete list (original file)
+                                result.FilesToDelete.Add(drawingFile);
+                            }
+                            else
+                            {
+                                Console.WriteLine($"  Could not get directory for: {drawingFile}");
+                                renamedFiles.Add(drawingFile);
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  Skipping {System.IO.Path.GetFileName(drawingFile)} - does not start with old prefix");
+                            renamedFiles.Add(drawingFile);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  Error renaming drawing file {System.IO.Path.GetFileName(drawingFile)}: {ex.Message}");
+                        result.FailedDrawings.Add($"Failed to rename {System.IO.Path.GetFileName(drawingFile)}: {ex.Message}");
+                        renamedFiles.Add(drawingFile); // Keep original path on error
+                    }
+                }
+                
+                Console.WriteLine($"Drawing file renaming completed. {renamedFiles.Count} files processed.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during drawing file renaming: {ex.Message}");
+                result.ErrorMessage = $"Drawing file renaming error: {ex.Message}";
+            }
+            
+            return renamedFiles;
+        }
+
+        /// <summary>
+        /// Renames the project file (.ipj) to match the new prefix.
+        /// </summary>
+        private void RenameProjectFile(string projectPath, string oldPrefix, string newPrefix, DrawingUpdateResult result)
+        {
+            try
+            {
+                Console.WriteLine("Renaming project file...");
+                
+                // Find all .ipj files in the project directory
+                var projectFiles = Directory.GetFiles(projectPath, "*.ipj", SearchOption.TopDirectoryOnly);
+                
+                foreach (var projectFile in projectFiles)
+                {
+                    try
+                    {
+                        var fileName = System.IO.Path.GetFileNameWithoutExtension(projectFile);
+                        var fileExt = System.IO.Path.GetExtension(projectFile);
+                        var directory = System.IO.Path.GetDirectoryName(projectFile);
+                        
+                        // Check if the file name starts with the old prefix
+                        if (fileName.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Generate new file name with new prefix
+                            var newFileName = fileName.Replace(oldPrefix, newPrefix, StringComparison.OrdinalIgnoreCase);
+                            
+                            if (directory != null)
+                            {
+                                var newFilePath = System.IO.Path.Combine(directory, newFileName + fileExt);
+                                
+                                // Check if the new file already exists
+                                if (System.IO.File.Exists(newFilePath))
+                                {
+                                    Console.WriteLine($"  Skipping {System.IO.Path.GetFileName(projectFile)} - target file already exists");
+                                    continue;
+                                }
+                                
+                                // Rename the project file with retry logic for file locks
+                                bool renameSuccess = false;
+                                for (int retry = 0; retry < 3; retry++)
+                                {
+                                    try
+                                    {
+                                        System.IO.File.Move(projectFile, newFilePath);
+                                        renameSuccess = true;
+                                        break;
+                                    }
+                                    catch (IOException ioEx) when (ioEx.Message.Contains("being used by another process"))
+                                    {
+                                        Console.WriteLine($"  Project file locked, retrying in 1 second... (attempt {retry + 1}/3)");
+                                        Thread.Sleep(1000);
+                                    }
+                                }
+                                
+                                if (renameSuccess)
+                                {
+                                    Console.WriteLine($"  Renamed project file: {System.IO.Path.GetFileName(projectFile)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                                    
+                                    // Add to files to delete list (original file)
+                                    result.FilesToDelete.Add(projectFile);
+                                    
+                                    result.UpdatedProjectFiles.Add($"Renamed: {System.IO.Path.GetFileName(projectFile)} -> {System.IO.Path.GetFileName(newFilePath)}");
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"  Failed to rename project file {System.IO.Path.GetFileName(projectFile)} - file still locked");
+                                    result.FailedProjectFiles.Add($"Failed to rename {System.IO.Path.GetFileName(projectFile)} - file locked");
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine($"  Could not get directory for project file: {projectFile}");
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  Skipping {System.IO.Path.GetFileName(projectFile)} - does not start with old prefix");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  Error renaming project file {System.IO.Path.GetFileName(projectFile)}: {ex.Message}");
+                        result.FailedProjectFiles.Add($"Failed to rename {System.IO.Path.GetFileName(projectFile)}: {ex.Message}");
+                    }
+                }
+                
+                Console.WriteLine("Project file renaming completed.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during project file renaming: {ex.Message}");
+                result.ErrorMessage = $"Project file renaming error: {ex.Message}";
             }
         }
 
