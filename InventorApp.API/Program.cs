@@ -91,10 +91,18 @@ if (app.Environment.IsDevelopment())
 
 app.UseRequestLocalization();
 app.UseHttpsRedirection();
+
+// Add static files middleware to serve Angular app
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseRouting();
 app.UseCors("AllowSpecificOrigin");
 app.UseAuthorization();
 app.MapControllers();
+
+// Add fallback route for Angular routing (SPA)
+app.MapFallbackToFile("index.html");
 
 // Add this section before app.Run()
 using (var scope = app.Services.CreateScope())
