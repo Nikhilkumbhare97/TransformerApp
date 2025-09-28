@@ -37,5 +37,8 @@ namespace InventorApp.API.Models
         [Column("conservator_support_details", TypeName = "json")]
         public string? ConservatorSupportDetails { get; set; }
 
+        [Column("parameter_details", TypeName = "json")]
+        public string? ParamterDetails { get; set; }
+
     }
 }

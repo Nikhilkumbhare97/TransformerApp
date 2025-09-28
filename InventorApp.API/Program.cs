@@ -53,6 +53,11 @@ builder.Services.AddScoped<IImageConfigRepository, ImageConfigRepository>();
 // Register Assembly services
 builder.Services.AddSingleton<AssemblyService>();
 
+// Register User services
+builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddSingleton<EncryptionService>();
+
 // Add DbContext configuration
 builder.Services.AddDbContext<ApplicationDbContext>((serviceProvider, options) =>
 {

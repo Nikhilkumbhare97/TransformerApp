@@ -55,7 +55,8 @@ namespace InventorApp.API.Services
                         LvTrunkingDetails = sourceConfig.LvTrunkingDetails,
                         LvHvTurretDetails = sourceConfig.LvHvTurretDetails,
                         ConservatorDetails = sourceConfig.ConservatorDetails,
-                        ConservatorSupportDetails = sourceConfig.ConservatorSupportDetails
+                        ConservatorSupportDetails = sourceConfig.ConservatorSupportDetails,
+                        ParamterDetails = sourceConfig.ParamterDetails
                     };
                     await _transformerConfigRepository.CreateAsync(newConfig);
                 }
