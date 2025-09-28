@@ -65,3 +65,4 @@ helm-chart/
 # Other OS-specific files
 Thumbs.db
 desktop.ini
+InventorApp.API/wwwroot/

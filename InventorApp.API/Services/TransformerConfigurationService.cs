@@ -56,6 +56,9 @@ namespace InventorApp.API.Services
             if (configuration.ConservatorSupportDetails != null)
                 existingConfig.ConservatorSupportDetails = configuration.ConservatorSupportDetails;
 
+            if (configuration.ParamterDetails != null)
+                existingConfig.ParamterDetails = configuration.ParamterDetails;
+
             return await _repository.UpdateAsync(existingConfig);
         }
 

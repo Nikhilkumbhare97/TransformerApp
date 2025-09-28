@@ -55,7 +55,8 @@ namespace InventorApp.API.Services
                         LvTrunkingDetails = sourceConfig.LvTrunkingDetails,
                         LvHvTurretDetails = sourceConfig.LvHvTurretDetails,
                         ConservatorDetails = sourceConfig.ConservatorDetails,
-                        ConservatorSupportDetails = sourceConfig.ConservatorSupportDetails
+                        ConservatorSupportDetails = sourceConfig.ConservatorSupportDetails,
+                        ParamterDetails = sourceConfig.ParamterDetails
                     };
                     await _transformerConfigRepository.CreateAsync(newConfig);
                 }
@@ -105,6 +106,8 @@ namespace InventorApp.API.Services
                 existingProject.PreparedBy = partialProject.PreparedBy;
             if (!string.IsNullOrEmpty(partialProject.CheckedBy))
                 existingProject.CheckedBy = partialProject.CheckedBy;
+            if (!string.IsNullOrEmpty(partialProject.RevisionNumber))
+                existingProject.RevisionNumber = partialProject.RevisionNumber;
 
             if (partialProject.Date != DateTime.MinValue)
             {

@@ -14,5 +14,6 @@ namespace InventorApp.API.Data
         public DbSet<Transformer> Transformers { get; set; }
         public DbSet<TransformerConfiguration> TransformerConfigurations { get; set; }
         public DbSet<ImageConfig> ImageConfigs { get; set; }
+        public DbSet<User> Users { get; set; }
     }
 } 
