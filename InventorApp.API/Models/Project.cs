@@ -61,6 +61,9 @@ namespace InventorApp.API.Models
         [NotMapped]
         public long? CopiedUniqueId { get; set; }
 
+        [Column("revision_number")]
+        public string RevisionNumber { get; set; }
+
         public Project()
         {
             ProjectId = string.Empty;
@@ -74,6 +77,7 @@ namespace InventorApp.API.Models
             Date = DateTime.Now;
             IsCopied = false;
             CopiedUniqueId = null;
+            RevisionNumber = "R1";
         }
     }
 }

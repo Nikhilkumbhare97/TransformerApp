@@ -46,6 +46,55 @@ namespace InventorApp.API.Services
             return user;
         }
 
+        public async Task<LoginResponse> LoginAsync(LoginRequest request)
+        {
+            var user = await _userRepository.GetByEmailAsync(request.Email);
+            if (user == null)
+            {
+                return new LoginResponse { Success = false, Message = "User not found" };
+            }
+            var encryptedInput = _encryptionService.EncryptToBase64(request.Password);
+            if (user.PasswordEncrypted != encryptedInput)
+            {
+                return new LoginResponse { Success = false, Message = "Invalid password" };
+            }
+            return new LoginResponse
+            {
+                Success = true,
+                Message = "Login successful",
+                UserUniqueId = user.UserUniqueId,
+                Name = user.Name,
+                EmployeeId = user.EmployeeId,
+                Email = user.Email,
+                Role = user.Role,
+                Status = user.Status
+            };
+        }
+
+        public async Task<ForgotPasswordResponse> ChangePasswordAsync(ForgotPasswordRequest request)
+        {
+            var byEmail = await _userRepository.GetByEmailAsync(request.Email);
+            if (byEmail == null)
+            {
+                return new ForgotPasswordResponse { Success = false, Message = "User with given email does not exist" };
+            }
+
+            if (!string.Equals(byEmail.EmployeeId, request.EmployeeId))
+            {
+                return new ForgotPasswordResponse { Success = false, Message = "EmployeeId does not match the email" };
+            }
+
+            var encOld = _encryptionService.EncryptToBase64(request.OldPassword);
+            if (!string.Equals(byEmail.PasswordEncrypted, encOld))
+            {
+                return new ForgotPasswordResponse { Success = false, Message = "Old password is incorrect" };
+            }
+
+            byEmail.PasswordEncrypted = _encryptionService.EncryptToBase64(request.NewPassword);
+            await _userRepository.UpdateAsync(byEmail);
+            return new ForgotPasswordResponse { Success = true, Message = "Password updated successfully" };
+        }
+
         public async Task<User?> UpdateUser(long userUniqueId, User partial)
         {
             var existing = await _userRepository.GetByIdAsync(userUniqueId);

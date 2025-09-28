@@ -106,6 +106,8 @@ namespace InventorApp.API.Services
                 existingProject.PreparedBy = partialProject.PreparedBy;
             if (!string.IsNullOrEmpty(partialProject.CheckedBy))
                 existingProject.CheckedBy = partialProject.CheckedBy;
+            if (!string.IsNullOrEmpty(partialProject.RevisionNumber))
+                existingProject.RevisionNumber = partialProject.RevisionNumber;
 
             if (partialProject.Date != DateTime.MinValue)
             {

@@ -10,6 +10,7 @@ namespace InventorApp.API.Repositories
         Task<User> UpdateAsync(User user);
         Task<User?> GetByIdAsync(long userUniqueId);
         Task<User?> GetByEmployeeIdAsync(string employeeId);
+        Task<User?> GetByEmailAsync(string email);
         Task<IEnumerable<User>> GetAllAsync();
         Task DeleteAsync(long userUniqueId);
     }
